@@ -7,7 +7,8 @@ Each chart shows two thresholds:
 - **Keep below** (amber dashed line): the recommended maximum for full performance and long hardware life.
 - **Throttling likely at** (red dashed line): the temperature where the device is likely to slow itself down.
 
-The top of the window shows each fan: its speed, and a ring that fills to its share of maximum speed.
+The top of the window shows the system thermal load, then each fan.
+A fan card shows its speed, and a ring that fills to its share of maximum speed.
 The fan icon in the ring spins faster as the fan does.
 
 ## Run it
@@ -33,6 +34,18 @@ Every 30 seconds it looks for new sensors and fans, for example a dGPU that woke
 
 Sensors that read 0 °C or less, or 200 °C or more, are treated as absent.
 Example: a Framework 16 without a GPU module reports its GPU sensors as -0.15 °C.
+
+## System thermal load
+
+A plain average of all temperatures mixes parts with very different limits, so the app does not show one.
+Instead it shows how close the most stressed sensor is to its own throttle point:
+
+- Each sensor gets `load = (30 °C − headroom) / 30 °C`, where headroom = throttle point − current temperature.
+- 0% means the sensor is 30 °C or more below its throttle point. 100% means it has reached it.
+- The system thermal load is the highest sensor load. The card names that sensor.
+
+Android's thermal headroom API uses the same method and the same 30 °C span.
+The load uses your custom thresholds, and it ignores hidden sensors.
 
 ## Fans
 
@@ -82,7 +95,9 @@ The app saves these choices in `~/.config/local.thermal-monitor/settings.json`.
 | `src-tauri/src/main.rs` | Tauri commands (`snapshot`, `get_settings`, `save_settings`) and the `sample` event |
 | `src/chart.ts` | Canvas chart: area line, grid, threshold lines, hover crosshair |
 | `src/main.ts` | Chart cards, threshold editor, summary bar |
-| `src/fans.ts` | Fan cards: ring gauge and spinning rotor |
+| `src/gauge.ts` | Ring gauge card shared by the top cards |
+| `src/load.ts` | System thermal load card |
+| `src/fans.ts` | Fan cards: share of maximum speed and spinning rotor |
 
 ## Tests
 
