@@ -1,0 +1,76 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Thermal Monitor</title>
+    <script type="module" src="/src/main.ts"></script>
+  </head>
+  <body>
+    <header class="topbar">
+      <div class="brand">
+        <svg viewBox="0 0 512 512" aria-hidden="true">
+          <path d="M64 400V330l66-14 60 6 56-54 58 14 56-72 52 18 36-52v224z" fill="currentColor" fill-opacity=".28" />
+          <path d="M64 330l66-14 60 6 56-54 58 14 56-72 52 18 36-52" fill="none" stroke="currentColor" stroke-width="36" stroke-linecap="round" stroke-linejoin="round" />
+        </svg>
+        Thermal Monitor
+      </div>
+      <div id="summary" class="summary" aria-live="polite"></div>
+      <div id="window" class="segmented" role="group" aria-label="Time window"></div>
+      <button id="hidden-button" class="button" type="button" hidden></button>
+    </header>
+
+    <p id="notice" class="notice" role="alert" hidden></p>
+
+    <main>
+      <section id="gauges" class="gauges" aria-label="Thermal load and fans" hidden></section>
+      <div id="cards" class="grid"></div>
+      <div id="empty" class="empty" hidden>
+        <h2>No temperature sensors found</h2>
+        <p>
+          Thermal Monitor reads <code>/sys/class/hwmon</code>. Check that the sensor drivers for your
+          hardware are loaded, for example <code>k10temp</code>, <code>coretemp</code> or <code>nvme</code>.
+        </p>
+      </div>
+    </main>
+
+    <dialog id="editor" aria-labelledby="editor-title">
+      <form method="dialog" novalidate>
+        <h2 id="editor-title"></h2>
+        <p id="editor-detail" class="muted"></p>
+        <p id="editor-basis"></p>
+        <div class="fields">
+          <label>
+            <span><span class="dash warn"></span>Keep below</span>
+            <span class="input-unit"><input name="safe" type="number" step="0.5" inputmode="decimal" /> °C</span>
+          </label>
+          <label>
+            <span><span class="dash crit"></span>Throttling likely at</span>
+            <span class="input-unit"><input name="throttle" type="number" step="0.5" inputmode="decimal" /> °C</span>
+          </label>
+        </div>
+        <p id="editor-defaults" class="muted"></p>
+        <p id="editor-error" class="error" role="alert" hidden></p>
+        <div class="dialog-actions">
+          <button class="button" value="hide">Hide sensor</button>
+          <span class="spacer"></span>
+          <button class="button" value="reset">Reset to default</button>
+          <button class="button" value="cancel">Cancel</button>
+          <button class="button primary" value="save">Save</button>
+        </div>
+      </form>
+    </dialog>
+
+    <dialog id="hidden" aria-labelledby="hidden-title">
+      <form method="dialog">
+        <h2 id="hidden-title">Hidden sensors</h2>
+        <ul id="hidden-list" class="hidden-list"></ul>
+        <div class="dialog-actions">
+          <button id="show-all" class="button" type="button">Show all</button>
+          <span class="spacer"></span>
+          <button class="button primary" value="close">Done</button>
+        </div>
+      </form>
+    </dialog>
+  </body>
+</html>
