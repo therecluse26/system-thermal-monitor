@@ -1,11 +1,12 @@
 //! Finds and reads fan speeds that the kernel exposes through hwmon.
+//! NVIDIA GPU fans come from `nvidia.rs` instead, as the same `Fan` type.
 
 use std::fs;
 use std::path::{Path, PathBuf};
 
 use serde::Serialize;
 
-use crate::sensors::{device_key, numbered, read_trimmed, SysPaths};
+use crate::sensors::{device_key, id_chip, legacy_device_key, make_unique, numbered, read_trimmed, SysPaths};
 
 /// Drivers that report the same physical fans as another driver: (duplicate, preferred).
 /// The duplicate's fans are skipped when the preferred driver has fans.
@@ -14,11 +15,37 @@ const DUPLICATE_SOURCES: &[(&str, &str)] = &[("framework_laptop", "cros_ec")];
 /// A reading above this is a glitch, not a fan.
 const MAX_PLAUSIBLE_RPM: u32 = 30_000;
 
+/// Where a fan's reading comes from.
+#[derive(Debug, Clone, PartialEq)]
+pub enum FanInput {
+    Hwmon {
+        input: PathBuf,
+        target: PathBuf,
+        /// `pwmN` and its full-scale value, when the file is readable.
+        pwm: Option<(PathBuf, f64)>,
+    },
+    /// An NVIDIA GPU fan, by NVML device index and fan index.
+    Nvml { gpu: u32, fan: u32 },
+}
+
+/// What the `share` of a reading measures.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ShareKind {
+    /// PWM duty cycle: the share of full power sent to the fan.
+    Pwm,
+    /// The driver's own figure for the share of maximum speed.
+    Driver,
+}
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Fan {
     /// Stable across reboots where the hardware allows it. Settings are keyed by it.
     pub id: String,
+    /// The id that earlier versions of the app used, so saved settings can move to `id`.
+    #[serde(skip)]
+    pub legacy_id: String,
     pub chip: String,
     /// Short name of what the fan belongs to, e.g. "System" or "GPU".
     pub device: String,
@@ -26,23 +53,21 @@ pub struct Fan {
     pub label: String,
     /// Rated maximum speed from `fanN_max`, when the hardware reports one.
     pub rated_max: Option<u32>,
+    /// What `FanReading::share` measures, when this fan reports one.
+    pub share_kind: Option<ShareKind>,
     #[serde(skip)]
-    input: PathBuf,
-    #[serde(skip)]
-    target: PathBuf,
-    /// `pwmN` and its full-scale value, when the file is readable.
-    #[serde(skip)]
-    pwm: Option<(PathBuf, f64)>,
+    pub input: FanInput,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct FanReading {
-    pub rpm: u32,
+    /// `None` when the hardware reports only a share of maximum speed.
+    pub rpm: Option<u32>,
     /// Speed the controller asks for, when it reports one.
     pub target: Option<u32>,
-    /// PWM duty cycle in percent, when it is readable.
-    pub duty: Option<f64>,
+    /// Share of maximum in percent; `Fan::share_kind` says what kind.
+    pub share: Option<f64>,
 }
 
 fn read_rpm(path: &Path) -> Option<u32> {
@@ -62,18 +87,25 @@ fn device_name(chip: &str) -> String {
     .to_string()
 }
 
-/// Current speed, or `None` when the fan cannot be read right now.
-pub fn read(fan: &Fan) -> Option<FanReading> {
-    let rpm = read_rpm(&fan.input)?;
-    let target = read_rpm(&fan.target).filter(|t| *t > 0);
-    let duty = fan.pwm.as_ref().and_then(|(path, full)| {
+/// Current speed of a hwmon fan, or `None` when it cannot be read right now.
+pub fn read_hwmon(input: &FanInput) -> Option<FanReading> {
+    let FanInput::Hwmon { input, target, pwm } = input else {
+        return None;
+    };
+    let rpm = read_rpm(input)?;
+    let target = read_rpm(target).filter(|t| *t > 0);
+    let share = pwm.as_ref().and_then(|(path, full)| {
         let raw: f64 = read_trimmed(path)?.parse().ok()?;
         Some((raw / full * 100.0).clamp(0.0, 100.0))
     });
-    Some(FanReading { rpm, target, duty })
+    Some(FanReading {
+        rpm: Some(rpm),
+        target,
+        share,
+    })
 }
 
-/// Finds every fan whose speed can be read right now.
+/// Finds every hwmon fan whose speed can be read right now.
 pub fn discover(paths: &SysPaths) -> Vec<Fan> {
     let mut fans = Vec::new();
     for index in numbered(&paths.hwmon, "hwmon", "") {
@@ -97,17 +129,25 @@ pub fn discover(paths: &SysPaths) -> Vec<Fan> {
             });
             fans.push(Fan {
                 id: format!(
+                    "{}/{}/fan{n}",
+                    id_chip(&chip),
+                    device_key(&chip, device_dir.as_deref())
+                ),
+                legacy_id: format!(
                     "{chip}/{}/fan{n}",
-                    device_key(&chip, &dir, device_dir.as_deref())
+                    legacy_device_key(&chip, &dir, device_dir.as_deref())
                 ),
                 device: device_name(&chip),
                 label: read_trimmed(&dir.join(format!("fan{n}_label")))
                     .unwrap_or_else(|| format!("Fan {n}")),
                 rated_max: read_rpm(&dir.join(format!("fan{n}_max"))).filter(|m| *m > 0),
+                share_kind: pwm.is_some().then_some(ShareKind::Pwm),
                 chip: chip.clone(),
-                input,
-                target: dir.join(format!("fan{n}_target")),
-                pwm,
+                input: FanInput::Hwmon {
+                    input,
+                    target: dir.join(format!("fan{n}_target")),
+                    pwm,
+                },
             });
         }
     }
@@ -118,6 +158,7 @@ pub fn discover(paths: &SysPaths) -> Vec<Fan> {
             .iter()
             .any(|(dup, preferred)| f.chip == *dup && chips.iter().any(|c| c == preferred))
     });
+    make_unique(&mut fans, |f| (&mut f.id, &f.legacy_id));
     fans
 }
 
@@ -141,12 +182,13 @@ mod tests {
         assert_eq!(fans[0].id, "amdgpu/0000:03:00.0/fan1");
         assert_eq!((fans[0].device.as_str(), fans[0].label.as_str()), ("GPU", "Fan 1"));
         assert_eq!(fans[0].rated_max, Some(3000));
+        assert_eq!(fans[0].share_kind, Some(ShareKind::Pwm));
         assert_eq!(
-            read(&fans[0]),
+            read_hwmon(&fans[0].input),
             Some(FanReading {
-                rpm: 1500,
+                rpm: Some(1500),
                 target: Some(1600),
-                duty: Some(40.0)
+                share: Some(40.0)
             })
         );
     }
@@ -161,12 +203,15 @@ mod tests {
         sys.write("class/hwmon/hwmon6/name", "cros_ec\n");
         sys.write("class/hwmon/hwmon10/name", "framework_laptop\n");
         sys.write("class/hwmon/hwmon6/fan1_target", "3700\n");
+        sys.link_device("hwmon6", "devices/platform/cros-ec-dev.0.auto/cros-ec-hwmon.6.auto");
 
         let fans = discover(&sys.paths());
         let names: Vec<String> = fans.iter().map(|f| format!("{} {}", f.chip, f.label)).collect();
         assert_eq!(names, ["cros_ec Fan 1", "cros_ec Fan 2"]);
-        let stopped = read(&fans[0]).unwrap();
-        assert_eq!((stopped.rpm, stopped.target, stopped.duty), (0, Some(3700), None));
+        assert_eq!(fans[0].id, "cros_ec/cros-ec-hwmon/fan1");
+        assert_eq!(fans[0].legacy_id, "cros_ec/cros-ec-hwmon.6.auto/fan1");
+        let stopped = read_hwmon(&fans[0].input).unwrap();
+        assert_eq!((stopped.rpm, stopped.target, stopped.share), (Some(0), Some(3700), None));
     }
 
     #[test]
@@ -186,7 +231,7 @@ mod tests {
     fn real_fans() {
         for f in discover(&SysPaths::default()) {
             let mut json = serde_json::to_value(&f).unwrap();
-            json["reading"] = serde_json::json!(read(&f));
+            json["reading"] = serde_json::json!(read_hwmon(&f.input));
             println!("{json}");
         }
     }

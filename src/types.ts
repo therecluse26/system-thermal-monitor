@@ -40,13 +40,16 @@ export interface Fan {
   label: string;
   /** Rated maximum in RPM, when the hardware reports one. */
   ratedMax: number | null;
+  /** What `FanReading.share` measures: PWM duty, or the driver's own share of maximum. */
+  shareKind: "pwm" | "driver" | null;
 }
 
 export interface FanReading {
-  rpm: number;
+  /** null when the hardware reports only a share of maximum speed. */
+  rpm: number | null;
   target: number | null;
-  /** PWM duty cycle in percent, when readable. */
-  duty: number | null;
+  /** Share of maximum in percent, when the hardware reports one. */
+  share: number | null;
 }
 
 export interface Snapshot {

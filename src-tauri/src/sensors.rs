@@ -1,4 +1,5 @@
 //! Finds and reads the temperature sensors that the kernel exposes through hwmon.
+//! NVIDIA GPUs come from `nvidia.rs` instead, as the same `Sensor` type.
 
 use std::collections::{HashMap, HashSet};
 use std::fs;
@@ -41,11 +42,23 @@ pub enum Category {
     Other,
 }
 
+/// Where a sensor's reading comes from.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Input {
+    /// A hwmon `tempN_input` file.
+    Hwmon(PathBuf),
+    /// An NVIDIA GPU, by NVML device index.
+    Nvml(u32),
+}
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Sensor {
     /// Stable across reboots where the hardware allows it. Settings are keyed by it.
     pub id: String,
+    /// The id that earlier versions of the app used, so saved settings can move to `id`.
+    #[serde(skip)]
+    pub legacy_id: String,
     /// hwmon driver name, e.g. "k10temp" or "nvme".
     pub chip: String,
     pub category: Category,
@@ -60,12 +73,13 @@ pub struct Sensor {
     pub detail: String,
     pub thresholds: Thresholds,
     #[serde(skip)]
-    pub input: PathBuf,
+    pub input: Input,
     /// Kernel name of the device (e.g. "nvme0"), used to tell identical devices apart.
     #[serde(skip)]
-    kernel_name: String,
+    pub kernel_name: String,
+    /// The hwmon directory, or another value that is unique per physical device.
     #[serde(skip)]
-    hwmon: PathBuf,
+    pub hwmon: PathBuf,
 }
 
 /// Reads a sysfs millidegree file as °C.
@@ -80,9 +94,9 @@ fn plausible(celsius: f64) -> bool {
     celsius > 0.0 && celsius < 200.0
 }
 
-/// Current temperature in °C, or `None` when the sensor cannot be read right now.
-pub fn read(sensor: &Sensor) -> Option<f64> {
-    read_celsius(&sensor.input).filter(|c| plausible(*c))
+/// Current temperature of a hwmon sensor in °C, or `None` when it cannot be read right now.
+pub fn read_hwmon(input: &Path) -> Option<f64> {
+    read_celsius(input).filter(|c| plausible(*c))
 }
 
 /// Reads a limit file and rounds it to 0.1 °C. Rounding the integer avoids
@@ -341,9 +355,77 @@ fn describe(
     }
 }
 
-/// Part of the sensor id that names the device. Prefers the drive serial for NVMe
-/// because "nvme0" and "nvme1" can swap between boots.
-pub(crate) fn device_key(chip: &str, hwmon: &Path, device_dir: Option<&Path>) -> String {
+/// Part of the sensor id that names the device. It must not change between boots, so it
+/// avoids the numbers the kernel hands out in probe order:
+///
+/// - NVMe drives use their serial number, because "nvme0" and "nvme1" can swap.
+/// - Devices on PCI use their PCI address, which belongs to the slot.
+/// - Below a PCI device, numbered names lose their number ("phy0" → "phy"), and I²C
+///   clients keep only their address ("20-0050" → "i2c-0050").
+/// - Platform devices drop an automatic instance number ("cros-ec-hwmon.6.auto" → "cros-ec-hwmon").
+pub(crate) fn device_key(chip: &str, device_dir: Option<&Path>) -> String {
+    if chip == "nvme" {
+        if let Some(serial) = device_dir.and_then(|d| read_trimmed(&d.join("serial"))) {
+            return serial;
+        }
+    }
+    let Some(dir) = device_dir else {
+        return chip.to_string();
+    };
+    let parts: Vec<String> = dir
+        .components()
+        .map(|c| c.as_os_str().to_string_lossy().into_owned())
+        .collect();
+    let leaf = parts.last().cloned().unwrap_or_default();
+    let pci = parts.iter().rev().find(|p| is_pci_address(p));
+    match pci {
+        Some(pci) if *pci == leaf => leaf,
+        Some(pci) => format!("{pci}/{}", stable_leaf(&leaf, true)),
+        None => stable_leaf(&leaf, false),
+    }
+}
+
+/// The driver name as used in ids. Some drivers put an instance number in their name
+/// ("mt7921_phy0", "iwlwifi_1"); that number is dropped.
+pub(crate) fn id_chip(chip: &str) -> &str {
+    let base = chip.trim_end_matches(|c: char| c.is_ascii_digit());
+    if base.len() == chip.len() {
+        return chip;
+    }
+    base.strip_suffix("_phy").or_else(|| base.strip_suffix('_')).unwrap_or(chip)
+}
+
+/// "0000:c3:00.0": domain, bus, device and function in hex.
+fn is_pci_address(name: &str) -> bool {
+    let b = name.as_bytes();
+    b.len() == 12
+        && b[4] == b':'
+        && b[7] == b':'
+        && b[10] == b'.'
+        && name.chars().enumerate().all(|(i, c)| matches!(i, 4 | 7 | 10) || c.is_ascii_hexdigit())
+}
+
+fn stable_leaf(leaf: &str, under_pci: bool) -> String {
+    if let Some(base) = leaf.strip_suffix(".auto") {
+        return base
+            .trim_end_matches(|c: char| c.is_ascii_digit())
+            .trim_end_matches('.')
+            .to_string();
+    }
+    if let Some((bus, addr)) = leaf.split_once('-') {
+        if bus.chars().all(|c| c.is_ascii_digit()) && addr.len() == 4 && addr.chars().all(|c| c.is_ascii_hexdigit()) {
+            return format!("i2c-{addr}");
+        }
+    }
+    let base = leaf.trim_end_matches(|c: char| c.is_ascii_digit());
+    if under_pci && !base.is_empty() && base.chars().all(|c| c.is_ascii_alphabetic()) {
+        return base.to_string();
+    }
+    leaf.to_string()
+}
+
+/// The device part of ids from earlier versions of the app: the plain kernel name.
+pub(crate) fn legacy_device_key(chip: &str, hwmon: &Path, device_dir: Option<&Path>) -> String {
     if chip == "nvme" {
         if let Some(serial) = device_dir.and_then(|d| read_trimmed(&d.join("serial"))) {
             return serial;
@@ -354,6 +436,22 @@ pub(crate) fn device_key(chip: &str, hwmon: &Path, device_dir: Option<&Path>) ->
         .and_then(|d| d.file_name())
         .map(|s| s.to_string_lossy().into_owned())
         .unwrap_or_default()
+}
+
+/// Gives a sensor whose id another sensor already has a suffix from its legacy id, so
+/// every id stays unique even when two devices share a stable name.
+pub(crate) fn make_unique<T>(items: &mut [T], id: fn(&mut T) -> (&mut String, &str)) {
+    let mut seen: HashMap<String, usize> = HashMap::new();
+    for item in items.iter_mut() {
+        let (current, _) = id(item);
+        *seen.entry(current.clone()).or_default() += 1;
+    }
+    for item in items.iter_mut() {
+        let (current, legacy) = id(item);
+        if seen[current.as_str()] > 1 {
+            *current = format!("{current}@{legacy}");
+        }
+    }
 }
 
 /// Finds every temperature sensor that reads a plausible value right now.
@@ -398,8 +496,13 @@ pub fn discover(paths: &SysPaths) -> Vec<Sensor> {
             let desc = describe(&chip, n, raw_label.as_deref(), device_dir.as_deref(), zone, &cpu);
             sensors.push(Sensor {
                 id: format!(
+                    "{}/{}/temp{n}",
+                    id_chip(&chip),
+                    device_key(&chip, device_dir.as_deref())
+                ),
+                legacy_id: format!(
                     "{chip}/{}/temp{n}",
-                    device_key(&chip, &dir, device_dir.as_deref())
+                    legacy_device_key(&chip, &dir, device_dir.as_deref())
                 ),
                 thresholds: thresholds::resolve(&chip, desc.category, &limits),
                 chip: chip.clone(),
@@ -408,7 +511,7 @@ pub fn discover(paths: &SysPaths) -> Vec<Sensor> {
                 label: desc.label,
                 instance: None,
                 detail: desc.detail,
-                input,
+                input: Input::Hwmon(input),
                 kernel_name: device_dir
                     .as_deref()
                     .and_then(|d| d.file_name())
@@ -419,15 +522,20 @@ pub fn discover(paths: &SysPaths) -> Vec<Sensor> {
         }
     }
 
+    make_unique(&mut sensors, |s| (&mut s.id, &s.legacy_id));
     disambiguate(&mut sensors);
-    // Stable sort: sensors of one device keep their tempN order.
-    sensors.sort_by(|a, b| (a.category, &a.device).cmp(&(b.category, &b.device)));
+    sort(&mut sensors);
     sensors
+}
+
+/// Sorts by category, then device; sensors of one device keep their order.
+pub fn sort(sensors: &mut [Sensor]) {
+    sensors.sort_by(|a, b| (a.category, &a.device).cmp(&(b.category, &b.device)));
 }
 
 /// Two drives of the same model would get the same names. Give every sensor of a
 /// device whose full sensor names collide with another device's its kernel name.
-fn disambiguate(sensors: &mut [Sensor]) {
+pub(crate) fn disambiguate(sensors: &mut [Sensor]) {
     let mut dirs_per_name: HashMap<(String, String), HashSet<PathBuf>> = HashMap::new();
     for s in sensors.iter() {
         dirs_per_name
@@ -482,7 +590,8 @@ mod tests {
 
         assert_eq!(sensors[0].detail, "Test CPU 9000");
         assert_eq!(sensors[0].id, "k10temp/0000:00:18.3/temp1");
-        assert_eq!(read(&sensors[0]), Some(57.375));
+        assert_eq!(sensors[0].input, Input::Hwmon(sys.path("class/hwmon/hwmon9/temp1_input")));
+        assert_eq!(read_hwmon(&sys.path("class/hwmon/hwmon9/temp1_input")), Some(57.375));
         assert_eq!(sensors[1].thresholds.throttle, 85.0);
         assert_eq!(sensors[2].thresholds.throttle, 104.9);
     }
@@ -565,6 +674,47 @@ mod tests {
     }
 
     #[test]
+    fn ids_avoid_probe_order_numbers() {
+        let key = |p: &str| device_key("x", Some(Path::new(p)));
+        assert_eq!(key("/sys/devices/pci0000:00/0000:00:18.3"), "0000:00:18.3");
+        assert_eq!(
+            key("/sys/devices/platform/FRMWC004:00/cros-ec-dev.0.auto/cros-ec-hwmon.6.auto"),
+            "cros-ec-hwmon"
+        );
+        assert_eq!(
+            key("/sys/devices/pci0000:00/0000:00:02.2/0000:03:00.0/ieee80211/phy0"),
+            "0000:03:00.0/phy"
+        );
+        assert_eq!(
+            key("/sys/devices/pci0000:00/0000:00:14.0/i2c-20/20-0050"),
+            "0000:00:14.0/i2c-0050"
+        );
+        assert_eq!(key("/sys/devices/virtual/thermal/thermal_zone0"), "thermal_zone0");
+        assert_eq!(key("/sys/devices/platform/coretemp.0"), "coretemp.0");
+        assert_eq!(key("/sys/devices/LNXSYSTM:00/PNP0C0A:00/power_supply/BAT1"), "BAT1");
+        assert_eq!(device_key("acpitz", None), "acpitz");
+        assert_eq!(id_chip("mt7921_phy0"), "mt7921");
+        assert_eq!(id_chip("iwlwifi_1"), "iwlwifi");
+        assert_eq!(id_chip("nct6798"), "nct6798");
+        assert_eq!(id_chip("k10temp"), "k10temp");
+    }
+
+    #[test]
+    fn clashing_ids_fall_back_to_kernel_names() {
+        let sys = FakeSys::new();
+        // Two SPD sensors at the same address on two buses of one controller.
+        for (hw, bus) in [("hwmon11", "i2c-20/20-0050"), ("hwmon12", "i2c-21/21-0050")] {
+            sys.write(&format!("class/hwmon/{hw}/name"), "spd5118\n");
+            sys.write(&format!("class/hwmon/{hw}/temp1_input"), "52000\n");
+            sys.link_device(hw, &format!("devices/0000:00:14.0/{bus}"));
+        }
+        let ids: Vec<String> = discover(&sys.paths()).into_iter().map(|s| s.id).collect();
+        assert_eq!(ids.len(), 2);
+        assert_ne!(ids[0], ids[1]);
+        assert!(ids[0].ends_with("@spd5118/20-0050/temp1"), "{ids:?}");
+    }
+
+    #[test]
     fn labels_are_readable() {
         assert_eq!(ec_label("ambient_f75303@4d"), "Ambient");
         assert_eq!(ec_label("gpu_vr_f75303@4d"), "GPU VR");
@@ -582,7 +732,8 @@ mod tests {
     fn real_sensors() {
         for s in discover(&SysPaths::default()) {
             let mut json = serde_json::to_value(&s).unwrap();
-            json["now"] = serde_json::json!(read(&s));
+            let Input::Hwmon(path) = &s.input else { continue };
+            json["now"] = serde_json::json!(read_hwmon(path));
             println!("{json}");
         }
     }

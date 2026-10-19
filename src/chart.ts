@@ -1,6 +1,17 @@
-// Canvas line-and-area chart in the style of KDE System Monitor, plus threshold lines.
+// Canvas chart in the style of KDE System Monitor, plus threshold lines.
+//
+// One series draws as a filled area. Up to MAX_LINES series draw as coloured lines.
+// More than that draw as a band from the coolest to the hottest series, because that
+// many colours cannot stay distinct.
 
 import { fmtLimit } from "./format";
+
+/** Line colours for charts with several series, on the dark card surface.
+ *  Validated as a set (dataviz palette check, dark mode, surface #1b1e20): adjacent
+ *  colour-blind ΔE ≥ 9.4, normal-vision ΔE ≥ 19.7, contrast ≥ 3:1. Yellow and red are
+ *  left out because the threshold lines use them. */
+export const PALETTE = ["#3987e5", "#d95926", "#199e70", "#9085e9", "#d55181", "#008300"];
+export const MAX_LINES = PALETTE.length;
 
 export interface ChartTheme {
   surface: string;
@@ -34,11 +45,22 @@ export function readTheme(): ChartTheme {
   };
 }
 
+export type ChartMode = "area" | "lines" | "band";
+
+export function chartMode(seriesCount: number): ChartMode {
+  return seriesCount <= 1 ? "area" : seriesCount <= MAX_LINES ? "lines" : "band";
+}
+
+/** Colour of series `k` in a chart of `count` series. */
+export function seriesColor(k: number, count: number, theme: ChartTheme): string {
+  return chartMode(count) === "lines" ? PALETTE[k] : theme.line;
+}
+
 export interface ChartInput {
   /** Unix ms, ascending. */
   times: readonly number[];
-  /** °C, aligned with `times`; null is a gap. */
-  values: readonly (number | null)[];
+  /** °C, each aligned with `times`; null is a gap. */
+  series: readonly (readonly (number | null)[])[];
   /** Visible time range, Unix ms. */
   start: number;
   end: number;
@@ -50,12 +72,11 @@ export interface ChartInput {
   spanLabel: string;
 }
 
-/** The sample under the crosshair, in CSS pixels relative to the canvas. */
+/** The sample under the crosshair: its index in `times`, and where to anchor a tooltip. */
 export interface HoverPoint {
+  index: number;
   x: number;
   y: number;
-  t: number;
-  value: number | null;
 }
 
 interface Scale {
@@ -99,6 +120,25 @@ function firstAtOrAfter(times: readonly number[], t: number): number {
 
 const clamp = (v: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, v));
 
+/** Per-sample minimum and maximum across all series; null where every series is null. */
+function envelope(series: ChartInput["series"], from: number, to: number) {
+  const lo: (number | null)[] = [];
+  const hi: (number | null)[] = [];
+  for (let i = from; i < to; i++) {
+    let min: number | null = null;
+    let max: number | null = null;
+    for (const s of series) {
+      const v = s[i];
+      if (v == null) continue;
+      if (min == null || v < min) min = v;
+      if (max == null || v > max) max = v;
+    }
+    lo.push(min);
+    hi.push(max);
+  }
+  return { lo, hi };
+}
+
 export function drawChart(canvas: HTMLCanvasElement, d: ChartInput, theme: ChartTheme): HoverPoint | null {
   const w = canvas.clientWidth;
   const h = canvas.clientHeight;
@@ -115,15 +155,18 @@ export function drawChart(canvas: HTMLCanvasElement, d: ChartInput, theme: Chart
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
   ctx.clearRect(0, 0, w, h);
 
-  // One point before the window keeps the line running into the left edge.
+  const mode = chartMode(d.series.length);
+  // One point before the window keeps the lines running into the left edge.
   const from = Math.max(0, firstAtOrAfter(d.times, d.start) - 1);
+  const to = d.times.length;
+  const env = envelope(d.series, from, to);
   let min: number | null = null;
   let max: number | null = null;
-  for (let i = from; i < d.values.length; i++) {
-    const v = d.values[i];
-    if (v == null) continue;
-    if (min == null || v < min) min = v;
-    if (max == null || v > max) max = v;
+  for (let k = 0; k < env.lo.length; k++) {
+    const lo = env.lo[k];
+    const hi = env.hi[k];
+    if (lo != null && (min == null || lo < min)) min = lo;
+    if (hi != null && (max == null || hi > max)) max = hi;
   }
   const scale = yScale(min, max, d.throttle);
 
@@ -167,37 +210,70 @@ export function drawChart(canvas: HTMLCanvasElement, d: ChartInput, theme: Chart
   ctx.clip();
   ctx.lineJoin = "round";
   ctx.lineCap = "round";
-  let run: [number, number][] = [];
-  const flush = () => {
-    if (run.length === 1) {
-      ctx.fillStyle = theme.line;
-      ctx.beginPath();
-      ctx.arc(run[0][0], run[0][1], 1.5, 0, Math.PI * 2);
-      ctx.fill();
-    } else if (run.length > 1) {
-      const trace = () => {
-        ctx.beginPath();
-        run.forEach(([x, y], k) => (k ? ctx.lineTo(x, y) : ctx.moveTo(x, y)));
-      };
-      trace();
-      ctx.lineTo(run[run.length - 1][0], bottom);
-      ctx.lineTo(run[0][0], bottom);
-      ctx.closePath();
-      ctx.fillStyle = theme.fill;
-      ctx.fill();
-      trace();
-      ctx.strokeStyle = theme.line;
-      ctx.lineWidth = 2;
-      ctx.stroke();
+
+  /** Calls `draw` for each run of consecutive non-null values. */
+  const eachRun = (values: readonly (number | null)[], offset: number, draw: (run: [number, number][], first: number) => void) => {
+    let run: [number, number][] = [];
+    let first = 0;
+    for (let k = 0; k <= values.length; k++) {
+      const v = k < values.length ? values[k] : null;
+      if (v == null) {
+        if (run.length) draw(run, first);
+        run = [];
+      } else {
+        if (!run.length) first = k;
+        run.push([X(d.times[offset + k]), Y(v)]);
+      }
     }
-    run = [];
   };
-  for (let i = from; i < d.values.length; i++) {
-    const v = d.values[i];
-    if (v == null) flush();
-    else run.push([X(d.times[i]), Y(v)]);
+  const trace = (run: [number, number][]) => {
+    ctx.beginPath();
+    run.forEach(([x, y], k) => (k ? ctx.lineTo(x, y) : ctx.moveTo(x, y)));
+  };
+  const stroke = (run: [number, number][], color: string, width: number) => {
+    if (run.length === 1) {
+      ctx.fillStyle = color;
+      ctx.beginPath();
+      ctx.arc(run[0][0], run[0][1], width * 0.75, 0, Math.PI * 2);
+      ctx.fill();
+      return;
+    }
+    trace(run);
+    ctx.strokeStyle = color;
+    ctx.lineWidth = width;
+    ctx.stroke();
+  };
+
+  if (mode === "area") {
+    eachRun(d.series[0]?.slice(from) ?? [], from, (run) => {
+      if (run.length > 1) {
+        trace(run);
+        ctx.lineTo(run[run.length - 1][0], bottom);
+        ctx.lineTo(run[0][0], bottom);
+        ctx.closePath();
+        ctx.fillStyle = theme.fill;
+        ctx.fill();
+      }
+      stroke(run, theme.line, 2);
+    });
+  } else if (mode === "lines") {
+    d.series.forEach((s, k) => eachRun(s.slice(from), from, (run) => stroke(run, PALETTE[k], 2)));
+  } else {
+    eachRun(env.hi, from, (upper, first) => {
+      const lower = env.lo.slice(first, first + upper.length).map((v, k) => [upper[k][0], Y(v!)] as [number, number]);
+      if (upper.length > 1) {
+        trace(upper);
+        for (let k = lower.length - 1; k >= 0; k--) ctx.lineTo(lower[k][0], lower[k][1]);
+        ctx.closePath();
+        ctx.fillStyle = theme.fill;
+        ctx.fill();
+      }
+      ctx.globalAlpha = 0.55;
+      stroke(lower, theme.line, 1.25);
+      ctx.globalAlpha = 1;
+      stroke(upper, theme.line, 2);
+    });
   }
-  flush();
   ctx.restore();
 
   // Threshold lines sit on top of the data so they stay visible under a hot trace.
@@ -241,12 +317,13 @@ export function drawChart(canvas: HTMLCanvasElement, d: ChartInput, theme: Chart
   ctx.textAlign = "right";
   ctx.fillText("now", right, bottom + 5);
 
-  return drawHover(ctx, d, { left, right, top, bottom }, X, Y, theme, from);
+  return drawHover(ctx, d, mode, { left, right, top, bottom }, X, Y, theme, from);
 }
 
 function drawHover(
   ctx: CanvasRenderingContext2D,
   d: ChartInput,
+  mode: ChartMode,
   plot: { left: number; right: number; top: number; bottom: number },
   X: (t: number) => number,
   Y: (c: number) => number,
@@ -269,16 +346,28 @@ function drawHover(
   ctx.lineTo(Math.round(x) + 0.5, plot.bottom);
   ctx.stroke();
 
-  const value = d.values[i];
-  if (value == null) return { x, y: plot.top, t: d.times[i], value: null };
-  const y = Y(value);
-  ctx.fillStyle = theme.surface;
-  ctx.beginPath();
-  ctx.arc(x, y, 5.5, 0, Math.PI * 2);
-  ctx.fill();
-  ctx.fillStyle = theme.line;
-  ctx.beginPath();
-  ctx.arc(x, y, 3.5, 0, Math.PI * 2);
-  ctx.fill();
-  return { x, y, t: d.times[i], value };
+  // Dots: every series in line mode; the hottest and coolest in band mode.
+  const values = d.series.map((s) => s[i]).filter((v): v is number => v != null);
+  const dots: [number, string][] =
+    mode === "lines"
+      ? d.series.flatMap((s, k) => (s[i] == null ? [] : [[s[i]!, PALETTE[k]] as [number, string]]))
+      : mode === "band" && values.length
+        ? [
+            [Math.max(...values), theme.line],
+            [Math.min(...values), theme.line],
+          ]
+        : values.map((v) => [v, theme.line] as [number, string]);
+  for (const [v, color] of dots) {
+    const y = Y(v);
+    ctx.fillStyle = theme.surface;
+    ctx.beginPath();
+    ctx.arc(x, y, 5.5, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.fillStyle = color;
+    ctx.beginPath();
+    ctx.arc(x, y, 3.5, 0, Math.PI * 2);
+    ctx.fill();
+  }
+  const y = values.length ? Y(Math.max(...values)) : plot.top;
+  return { index: i, x, y };
 }

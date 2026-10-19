@@ -181,6 +181,47 @@ pub fn resolve(chip: &str, category: Category, hw: &Limits) -> Thresholds {
     }
 }
 
+/// NVIDIA limits from NVML, in °C, each `None` when absent or not believable.
+///
+/// GPU Boost lowers clocks above the temperature target (NVML's "acoustic" threshold).
+/// "GPU max" is where clocks may fall below base clock. "Slowdown" is hardware throttling.
+pub fn nvidia(target: Option<f64>, gpu_max: Option<f64>, slowdown: Option<f64>, shutdown: Option<f64>) -> Thresholds {
+    let mut later = Vec::new();
+    if let Some(s) = slowdown {
+        later.push(format!("Hardware slowdown starts at {}.", deg(s)));
+    }
+    if let Some(s) = shutdown {
+        later.push(format!("The GPU shuts down at {}.", deg(s)));
+    }
+    let later = later.iter().map(|l| format!(" {l}")).collect::<String>();
+    if let Some(t) = target {
+        return Thresholds::hardware(
+            t,
+            10.0,
+            format!("GPU Boost lowers the clocks above the temperature target of {}.{later}", deg(t)),
+        );
+    }
+    if let Some(m) = gpu_max {
+        return Thresholds::hardware(
+            m,
+            10.0,
+            format!("The driver reports that clocks can drop below base clock at {}.{later}", deg(m)),
+        );
+    }
+    if let Some(s) = slowdown {
+        return Thresholds::hardware(
+            s,
+            10.0,
+            format!("The driver reports hardware slowdown at {}.{later}", deg(s)),
+        );
+    }
+    Thresholds::estimate(
+        83.0,
+        10.0,
+        "This GPU reports no limit. GPU Boost lowers the clocks above 83 °C by default.",
+    )
+}
+
 fn generic(category: Category, hw: &Limits) -> Thresholds {
     if let Some(passive) = hw.passive {
         return Thresholds::hardware(
@@ -285,6 +326,17 @@ mod tests {
             let t = resolve(chip, Category::Other, &Limits::default());
             assert!(t.safe < t.throttle, "{chip}: {t:?}");
         }
+    }
+
+    #[test]
+    fn nvidia_prefers_the_boost_temperature_target() {
+        let t = nvidia(Some(83.0), Some(93.0), Some(98.0), Some(101.0));
+        assert_eq!((t.safe, t.throttle, t.source), (73.0, 83.0, Source::Hardware));
+        assert!(t.basis.contains("98 °C") && t.basis.contains("101 °C"));
+
+        let t = nvidia(None, None, Some(98.0), None);
+        assert_eq!(t.throttle, 98.0);
+        assert_eq!(nvidia(None, None, None, None).source, Source::Estimate);
     }
 
     #[test]

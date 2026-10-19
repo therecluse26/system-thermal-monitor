@@ -169,6 +169,7 @@ main {
 }
 
 .gauge-card {
+  position: relative;
   display: flex;
   align-items: center;
   gap: 12px;
@@ -243,12 +244,31 @@ main {
   font-variant-numeric: tabular-nums;
 }
 
+.gauge-secondary {
+  color: var(--text-2);
+  font-size: 14px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
 .gauge-detail {
   color: var(--text-3);
   font-size: 12px;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+.gauge-hide {
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  opacity: 0;
+}
+
+.gauge-card:hover .gauge-hide,
+.gauge-hide:focus-visible {
+  opacity: 1;
 }
 
 /* Thermal load: the ring takes the colour of the worst status; the pill names it. */
@@ -488,11 +508,31 @@ main {
   font-variant-numeric: tabular-nums;
 }
 
+.tip-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.tip-row b {
+  margin-left: auto;
+  padding-left: 12px;
+}
+
+.tip-row .swatch {
+  height: 10px;
+  width: 4px;
+}
+
+.tip-time {
+  margin-top: 2px;
+}
+
 /* Legend row, laid out like KDE System Monitor's. */
 .legend {
   display: grid;
   grid-template-columns: 1fr 1fr;
-  gap: 24px;
+  gap: 4px 24px;
   font-size: 14px;
 }
 
@@ -501,6 +541,10 @@ main {
   align-items: center;
   gap: 8px;
   min-width: 0;
+}
+
+.legend-item.wide {
+  grid-column: 1 / -1;
 }
 
 .legend-label {
@@ -641,6 +685,27 @@ dialog p {
 
 .error {
   color: #f06a6a;
+}
+
+.members {
+  display: grid;
+  gap: 4px;
+  margin: 12px 0 0;
+}
+
+.members h3 {
+  margin: 0 0 4px;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.member {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 4px 6px 4px 10px;
+  border-radius: 6px;
+  background: var(--surface);
 }
 
 .dialog-actions {

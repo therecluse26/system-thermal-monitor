@@ -2,6 +2,7 @@
 
 A Tauri desktop app that charts every hardware temperature sensor over time.
 The charts follow the look of KDE System Monitor.
+Sensors of one device that share their thresholds draw as one chart, for example both DIMMs.
 Each chart shows two thresholds:
 
 - **Keep below** (amber dashed line): the recommended maximum for full performance and long hardware life.
@@ -29,23 +30,41 @@ This is a WebKitGTK problem with some GPU drivers, not a problem in this app.
 ## Where the data comes from
 
 The app reads `/sys/class/hwmon` once per second. It needs no root access.
+NVIDIA GPUs on the proprietary driver come from NVML instead (see below).
 It keeps 30 minutes of history in memory. The time-window buttons choose 1, 5, 10 or 30 minutes.
 Every 30 seconds it looks for new sensors and fans, for example a dGPU that woke up.
 
 Sensors that read 0 °C or less, or 200 °C or more, are treated as absent.
 Example: a Framework 16 without a GPU module reports its GPU sensors as -0.15 °C.
 
+## One chart per device
+
+The app puts sensors in one chart when they have the same device name and the same thresholds.
+If you give one sensor its own thresholds, it moves to its own chart.
+
+- **1 sensor**: a filled area, as in KDE System Monitor.
+- **2–6 sensors**: one coloured line per sensor. The legend and the hover tooltip list each one.
+- **More than 6 sensors** (for example the cores of a large Intel CPU): a band from the coolest
+  to the hottest sensor. The legend names the hottest and the coolest sensor.
+
+The edit button on a chart sets thresholds for every sensor in it.
+It also lists the sensors, so you can hide one of them.
+
 ## System thermal load
 
-A plain average of all temperatures mixes parts with very different limits, so the app does not show one.
-Instead it shows how close the most stressed sensor is to its own throttle point:
+The card shows two numbers:
+
+- **Average**: the plain mean of the visible sensors, in °C.
+- **Load**: how close the most stressed sensor is to its own throttle point, in percent.
+
+The average mixes parts with very different limits, so it cannot show risk on its own. The load does:
 
 - Each sensor gets `load = (30 °C − headroom) / 30 °C`, where headroom = throttle point − current temperature.
 - 0% means the sensor is 30 °C or more below its throttle point. 100% means it has reached it.
 - The system thermal load is the highest sensor load. The card names that sensor.
 
 Android's thermal headroom API uses the same method and the same 30 °C span.
-The load uses your custom thresholds, and it ignores hidden sensors.
+The load uses your custom thresholds. Both numbers ignore hidden sensors.
 
 ## Fans
 
@@ -60,6 +79,22 @@ A fan's "share of maximum" uses the first of these that the hardware offers:
 3. **Fastest seen**: the highest speed this app has recorded for the fan. It is saved between runs.
 
 Hover a fan card to see which one applies.
+
+A fan card appears only after the fan has turned once, or when its controller asks for a speed.
+This keeps empty fan headers on desktop boards off the screen.
+Hover a fan card and click the crossed-out eye to hide it.
+
+## NVIDIA GPUs
+
+The proprietary NVIDIA driver exposes no hwmon sensors. The app reads these GPUs through NVML.
+It loads `libnvidia-ml.so.1` at run time, so machines without the NVIDIA driver need nothing extra.
+
+- **Temperature**: the GPU core temperature.
+- **Throttling likely at**: the GPU Boost temperature target, else the "GPU max" threshold,
+  else the hardware slowdown threshold. Without any of these: 83 °C, marked as an estimate.
+- **Fans**: the speed as a share of maximum, from the driver. RPM appears too when the driver reports it.
+
+This support is not tested on real NVIDIA hardware yet.
 
 ## How the thresholds are chosen
 
@@ -80,8 +115,19 @@ Hover the tag, or open the editor, to see the reason.
 | Wi-Fi chips | 100 °C estimate | 80 °C |
 | Anything else | `max`, then `crit` − 5 °C, else 95 °C estimate | 10–15 °C lower |
 
-The edit button on each chart sets custom values or hides the sensor.
+The edit button on each chart sets custom values or hides the chart.
 The app saves these choices in `~/.config/local.thermal-monitor/settings.json`.
+
+## Saved settings
+
+Settings are keyed by sensor and fan ids. The ids avoid numbers that the kernel gives out in probe order:
+
+- NVMe drives use their serial number; NVIDIA GPUs use their UUID.
+- Devices on PCI use their PCI address. Below it, numbered names lose the number (`phy0` → `phy`).
+- I²C sensors keep their address but not the bus number (`20-0050` → `i2c-0050`).
+- Platform devices drop automatic instance numbers (`cros-ec-hwmon.6.auto` → `cros-ec-hwmon`).
+
+At start-up, the app moves settings saved under the ids of earlier versions to the new ids.
 
 ## Code layout
 
@@ -89,12 +135,13 @@ The app saves these choices in `~/.config/local.thermal-monitor/settings.json`.
 |---|---|
 | `src-tauri/src/sensors.rs` | Finds hwmon sensors, names them, reads them |
 | `src-tauri/src/fans.rs` | Finds and reads fans, drops duplicate drivers |
+| `src-tauri/src/nvidia.rs` | NVIDIA GPU temperatures and fans through NVML |
 | `src-tauri/src/thresholds.rs` | Default thresholds per sensor driver |
 | `src-tauri/src/monitor.rs` | 1 Hz sampler and the 30-minute history |
 | `src-tauri/src/settings.rs` | Saved overrides, hidden sensors, time window, fastest fan speeds |
 | `src-tauri/src/main.rs` | Tauri commands (`snapshot`, `get_settings`, `save_settings`) and the `sample` event |
-| `src/chart.ts` | Canvas chart: area line, grid, threshold lines, hover crosshair |
-| `src/main.ts` | Chart cards, threshold editor, summary bar |
+| `src/chart.ts` | Canvas chart: area, lines or band; grid, threshold lines, hover crosshair |
+| `src/main.ts` | Groups sensors into chart cards; threshold editor, hidden list, summary bar |
 | `src/gauge.ts` | Ring gauge card shared by the top cards |
 | `src/load.ts` | System thermal load card |
 | `src/fans.ts` | Fan cards: share of maximum speed and spinning rotor |
@@ -106,4 +153,5 @@ cd src-tauri
 cargo test                                           # unit tests, against a fake /sys tree
 cargo test real_sensors -- --ignored --nocapture     # prints the sensors of this machine as JSON
 cargo test real_fans -- --ignored --nocapture        # prints the fans of this machine as JSON
+cargo test real_monitor -- --ignored --nocapture     # NVML status, counts, and the ids that settings move between
 ```

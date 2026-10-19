@@ -3,6 +3,7 @@
 
 mod fans;
 mod monitor;
+mod nvidia;
 mod sensors;
 mod settings;
 #[cfg(test)]
@@ -90,9 +91,15 @@ fn main() {
                 monitor.fan_count(),
                 settings_path.display()
             );
+            let mut settings = Settings::load(&settings_path);
+            if settings.migrate(&monitor.aliases()) {
+                if let Err(e) = settings.save(&settings_path) {
+                    eprintln!("thermal-monitor: could not save migrated settings: {e}");
+                }
+            }
             app.manage(AppState {
                 monitor: Mutex::new(monitor),
-                settings: Mutex::new(Settings::load(&settings_path)),
+                settings: Mutex::new(settings),
                 settings_path,
             });
             spawn_sampler(app.handle().clone());

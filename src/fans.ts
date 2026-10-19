@@ -10,6 +10,10 @@ const ROTOR =
     .join("") +
   '<circle r="3.2"/></svg>';
 
+const HIDE_ICON =
+  '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M2 8s2.2-4 6-4 6 4 6 4-2.2 4-6 4-6-4-6-4z"/>' +
+  '<circle cx="8" cy="8" r="1.8"/><path d="M3 13L13 3"/></svg>';
+
 export interface FanView extends GaugeCard {
   fan: Fan;
 }
@@ -18,15 +22,27 @@ export function fmtRpm(rpm: number): string {
   return `${rpm.toLocaleString("en-US")} RPM`;
 }
 
+export function fanName(fan: Fan): string {
+  return `${fan.device} · ${fan.label}`;
+}
+
+/** True when the fan reading shows it turning. */
+export function spinning(r: FanReading | null): boolean {
+  return (r?.rpm ?? 0) > 0 || (r?.share ?? 0) > 0;
+}
+
 /** Share of the fan's maximum speed, and what "maximum" means for this fan. */
 function share(fan: Fan, r: FanReading, peak: number | undefined) {
-  if (fan.ratedMax) {
+  if (fan.ratedMax && r.rpm != null) {
     return { pct: (r.rpm / fan.ratedMax) * 100, basis: "of rated max", hint: `Rated maximum: ${fmtRpm(fan.ratedMax)}.` };
   }
-  if (r.duty != null) {
-    return { pct: r.duty, basis: "PWM duty", hint: "The share of full power that the controller sends to this fan." };
+  if (r.share != null && fan.shareKind === "driver") {
+    return { pct: r.share, basis: "of max speed", hint: "The driver reports the fan speed as a share of its maximum." };
   }
-  if (peak) {
+  if (r.share != null) {
+    return { pct: r.share, basis: "PWM duty", hint: "The share of full power that the controller sends to this fan." };
+  }
+  if (peak && r.rpm != null) {
     return {
       pct: (r.rpm / peak) * 100,
       basis: "of fastest seen",
@@ -36,8 +52,17 @@ function share(fan: Fan, r: FanReading, peak: number | undefined) {
   return null;
 }
 
-export function buildFanView(fan: Fan): FanView {
-  return { fan, ...buildGaugeCard("fan", `${fan.device} · ${fan.label}`, ROTOR) };
+export function buildFanView(fan: Fan, onHide: () => void): FanView {
+  const view: FanView = { fan, ...buildGaugeCard("fan", fanName(fan), ROTOR) };
+  const hide = document.createElement("button");
+  hide.type = "button";
+  hide.className = "icon-button gauge-hide";
+  hide.title = "Hide this fan";
+  hide.setAttribute("aria-label", `Hide ${fanName(fan)}`);
+  hide.innerHTML = HIDE_ICON;
+  hide.addEventListener("click", onHide);
+  view.card.append(hide);
+  return view;
 }
 
 export function renderFan(view: FanView, reading: FanReading | null, peak: number | undefined): void {
@@ -50,16 +75,18 @@ export function renderFan(view: FanView, reading: FanReading | null, peak: numbe
     return;
   }
 
-  view.value.textContent = fmtRpm(reading.rpm);
-  if (reading.rpm === 0) {
+  const s = share(view.fan, reading, peak);
+  view.value.textContent =
+    reading.rpm != null ? fmtRpm(reading.rpm) : s ? `${Math.round(s.pct)}%` : "—";
+  if (!spinning(reading)) {
     view.detail.textContent = "Stopped";
     spin(view, 0);
     view.card.title = target;
     return;
   }
-  const s = share(view.fan, reading, peak);
   const pct = s ? Math.min(100, Math.max(0, s.pct)) : 50;
-  view.detail.textContent = s ? `${Math.round(pct)}% ${s.basis}` : "Maximum unknown";
+  // Without RPM the percentage is already the large value; do not repeat it.
+  view.detail.textContent = !s ? "Maximum unknown" : reading.rpm == null ? s.basis : `${Math.round(pct)}% ${s.basis}`;
   spin(view, pct);
   view.card.title = [s?.hint, target].filter(Boolean).join(" ");
 }

@@ -1,8 +1,8 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 
-import { drawChart, readTheme, type ChartTheme, type HoverPoint } from "./chart";
-import { buildFanView, renderFan, type FanView } from "./fans";
+import { chartMode, drawChart, readTheme, seriesColor, type ChartMode, type ChartTheme, type HoverPoint } from "./chart";
+import { buildFanView, fanName, renderFan, spinning, type FanView } from "./fans";
 import { fmtAgo, fmtClock, fmtLimit, fmtTemp, setStatus, statusOf, type Status } from "./format";
 import { buildLoadView, renderLoad, type LoadInput, type LoadView } from "./load";
 import type { Category, FanReading, Override, Sample, Sensor, Settings, Snapshot } from "./types";
@@ -18,23 +18,37 @@ const WINDOWS = [
 /** Cards appear in this order; within a category they keep the backend's order. */
 const CATEGORY_ORDER: Category[] = ["cpu", "gpu", "memory", "storage", "board", "wireless", "battery", "acpi", "other"];
 
-const EDIT_ICON =
-  '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M2 4.5h7M12.5 4.5H14M2 11.5h1.5M7 11.5h7"/>' +
-  '<circle cx="10.75" cy="4.5" r="1.75"/><circle cx="5.25" cy="11.5" r="1.75"/></svg>';
+/** A chart card takes the worst status of its sensors, in this order. */
+const SEVERITY: Status[] = ["hot", "warm", "ok", "offline"];
 
 /** Fastest-seen fan speeds are saved at most this often. */
 const PEAK_SAVE_MS = 15_000;
 
-/** DOM handles for one sensor's chart card. */
+const EDIT_ICON =
+  '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M2 4.5h7M12.5 4.5H14M2 11.5h1.5M7 11.5h7"/>' +
+  '<circle cx="10.75" cy="4.5" r="1.75"/><circle cx="5.25" cy="11.5" r="1.75"/></svg>';
+
+/** Sensors of one device that share their thresholds. They draw as one chart. */
+interface Group {
+  /** Indexes into `Snapshot.sensors`. */
+  members: number[];
+}
+
+interface LegendItem {
+  label: HTMLElement;
+  value: HTMLElement;
+}
+
+/** DOM handles for one chart card. */
 interface View {
-  index: number;
+  group: Group;
+  mode: ChartMode;
   card: HTMLElement;
   canvas: HTMLCanvasElement;
   tip: HTMLElement;
   pill: HTMLElement;
-  now: HTMLElement;
-  peakLabel: HTMLElement;
-  peak: HTMLElement;
+  /** Area: [current, peak]. Lines: one per member, then peak. Band: [hottest, coolest, peak]. */
+  items: LegendItem[];
   safe: HTMLElement;
   throttle: HTMLElement;
   source: HTMLElement;
@@ -49,8 +63,12 @@ let settings: Settings = { overrides: {}, hidden: [], windowSecs: 300, fanPeaks:
 let views: View[] = [];
 let fanViews: FanView[] = [];
 let loadView: LoadView | null = null;
+/** Ids of the fans the top row shows now; the row is rebuilt when this changes. */
+let shownFans = "";
+/** Fans seen turning since the app started. */
+const spun = new Set<string>();
 let peaksChanged = false;
-let hover: { index: number; x: number } | null = null;
+let hover: { view: View; x: number } | null = null;
 let loading = false;
 let pending: Sample[] = [];
 let frame = 0;
@@ -110,12 +128,15 @@ function append(sample: Sample): void {
   notePeaks(sample.fans);
 }
 
-/** Remembers the fastest speed of each fan; it stands in for the maximum when the hardware reports none. */
+/** Remembers which fans turn, and the fastest speed of each. The fastest speed stands in
+ *  for the maximum when the hardware reports none. */
 function notePeaks(readings: (FanReading | null)[]): void {
   if (!snap) return;
   readings.forEach((r, i) => {
     const id = snap!.fans[i]?.id;
-    if (id && r && r.rpm > (settings.fanPeaks[id] ?? 0)) {
+    if (!id || !r || !spinning(r)) return;
+    spun.add(id);
+    if (r.rpm != null && r.rpm > (settings.fanPeaks[id] ?? 0)) {
       settings.fanPeaks[id] = r.rpm;
       peaksChanged = true;
     }
@@ -131,18 +152,38 @@ function limitsOf(sensor: Sensor) {
   };
 }
 
+function deviceName(s: Sensor): string {
+  return s.instance ? `${s.device} (${s.instance})` : s.device;
+}
+
 function sensorName(s: Sensor): string {
-  const device = s.instance ? `${s.device} (${s.instance})` : s.device;
-  return s.device === s.label ? device : `${device} · ${s.label}`;
+  return s.device === s.label ? deviceName(s) : `${deviceName(s)} · ${s.label}`;
+}
+
+function groupName(g: Group): string {
+  const first = snap!.sensors[g.members[0]];
+  return g.members.length === 1 ? sensorName(first) : deviceName(first);
 }
 
 /** Sensor name whose device part shrinks first, so the label that tells sensors apart stays visible. */
-function nameNode(s: Sensor, className: string): HTMLElement {
-  const node = el("span", `name ${className}`);
+function nameNode(s: Sensor, withLabel: boolean): HTMLElement {
+  const node = el("span", "name");
   node.append(el("span", "name-device", s.device));
   if (s.instance) node.append(el("span", "name-instance", `(${s.instance})`));
-  if (s.device !== s.label) node.append(el("span", "name-sep", "·"), el("span", "name-label", s.label));
+  if (withLabel && s.device !== s.label) node.append(el("span", "name-sep", "·"), el("span", "name-label", s.label));
   return node;
+}
+
+/** A fan stays out of the top row until it has turned once, unless its controller asks
+ *  it to turn. This drops empty fan headers on desktop boards. */
+function fanShown(i: number): boolean {
+  const fan = snap!.fans[i];
+  if (settings.hidden.includes(fan.id)) return false;
+  return spun.has(fan.id) || (settings.fanPeaks[fan.id] ?? 0) > 0 || (snap!.fanReadings[i]?.target ?? 0) > 0;
+}
+
+function shownFanKey(): string {
+  return snap ? snap.fans.filter((_, i) => fanShown(i)).map((f) => f.id).join("|") : "";
 }
 
 function windowLabel(): string {
@@ -158,6 +199,12 @@ async function saveSettings(): Promise<void> {
   }
 }
 
+function hideIds(ids: string[]): void {
+  settings.hidden = [...new Set([...settings.hidden, ...ids])];
+  void saveSettings();
+  build();
+}
+
 // ---------- DOM building ----------
 
 function el<K extends keyof HTMLElementTagNameMap>(tag: K, className = "", text = ""): HTMLElementTagNameMap[K] {
@@ -167,30 +214,33 @@ function el<K extends keyof HTMLElementTagNameMap>(tag: K, className = "", text 
   return node;
 }
 
+/** Groups visible sensors by device and shared thresholds, in category order. */
+function groupSensors(): Group[] {
+  const hidden = new Set(settings.hidden);
+  const rank = (c: Category) => CATEGORY_ORDER.indexOf(c);
+  const visible = snap!.sensors
+    .map((sensor, index) => ({ sensor, index }))
+    .filter(({ sensor }) => !hidden.has(sensor.id))
+    .sort((a, b) => rank(a.sensor.category) - rank(b.sensor.category) || a.index - b.index);
+  const groups = new Map<string, Group>();
+  for (const { sensor, index } of visible) {
+    const { safe, throttle } = limitsOf(sensor);
+    const key = [sensor.category, sensor.device, sensor.instance ?? "", safe, throttle].join("|");
+    const group = groups.get(key) ?? { members: [] };
+    group.members.push(index);
+    groups.set(key, group);
+  }
+  return [...groups.values()];
+}
+
 function build(): void {
   if (!snap) return;
   const cards = $("#cards");
   cards.replaceChildren();
-  views = [];
   hover = null;
-
-  const gauges = $("#gauges");
-  loadView = snap.sensors.length > 0 ? buildLoadView() : null;
-  fanViews = snap.fans.map(buildFanView);
-  gauges.replaceChildren(...(loadView ? [loadView.card] : []), ...fanViews.map((v) => v.card));
-  gauges.hidden = gauges.childElementCount === 0;
-
-  const hidden = new Set(settings.hidden);
-  const rank = (c: Category) => CATEGORY_ORDER.indexOf(c);
-  const visible = snap.sensors
-    .map((sensor, index) => ({ sensor, index }))
-    .filter(({ sensor }) => !hidden.has(sensor.id))
-    .sort((a, b) => rank(a.sensor.category) - rank(b.sensor.category) || a.index - b.index);
-  for (const { sensor, index } of visible) {
-    const view = buildView(index, sensor);
-    cards.append(view.card);
-    views.push(view);
-  }
+  views = groupSensors().map(buildView);
+  cards.append(...views.map((v) => v.card));
+  buildGauges();
 
   $("#empty").hidden = snap.sensors.length > 0;
   const hiddenButton = $<HTMLButtonElement>("#hidden-button");
@@ -202,22 +252,48 @@ function build(): void {
   queueRender();
 }
 
-function buildView(index: number, sensor: Sensor): View {
-  const name = sensorName(sensor);
+/** The top row: system thermal load, then each shown fan. */
+function buildGauges(): void {
+  if (!snap) return;
+  const gauges = $("#gauges");
+  loadView = snap.sensors.length > 0 ? buildLoadView() : null;
+  fanViews = snap.fans.flatMap((fan, i) => (fanShown(i) ? [buildFanView(fan, () => hideIds([fan.id]))] : []));
+  shownFans = shownFanKey();
+  gauges.replaceChildren(...(loadView ? [loadView.card] : []), ...fanViews.map((v) => v.card));
+  gauges.hidden = gauges.childElementCount === 0;
+}
+
+function legendItem(parent: HTMLElement, label: string, color?: string, wide = false): LegendItem {
+  const item = el("div", wide ? "legend-item wide" : "legend-item");
+  const labelNode = el("span", "legend-label", label);
+  const value = el("span", "legend-value");
+  if (color) {
+    const swatch = el("span", "swatch");
+    swatch.style.background = color;
+    item.append(swatch);
+  }
+  item.append(labelNode, value);
+  parent.append(item);
+  return { label: labelNode, value };
+}
+
+function buildView(group: Group): View {
+  const sensors = group.members.map((i) => snap!.sensors[i]);
+  const first = sensors[0];
+  const name = groupName(group);
+  const mode = chartMode(sensors.length);
 
   const card = el("article", "card");
-  card.id = `card-${index}`;
   const head = el("header", "card-head");
   const title = el("h3", "card-title");
-  title.append(nameNode(sensor, ""));
-  title.title = `${name}\n${sensor.detail}\n${sensor.id}`;
+  title.append(nameNode(first, sensors.length === 1));
+  title.title = sensors.length === 1 ? `${name}\n${first.detail}\n${first.id}` : `${name}\n${first.detail}`;
   const pill = el("span", "pill");
   const edit = el("button", "icon-button");
   edit.type = "button";
   edit.title = "Edit thresholds";
   edit.setAttribute("aria-label", `Edit thresholds for ${name}`);
   edit.innerHTML = EDIT_ICON;
-  edit.addEventListener("click", () => openEditor(index));
   const actions = el("span", "head-actions");
   actions.append(pill, edit);
   head.append(title, actions);
@@ -229,24 +305,18 @@ function buildView(index: number, sensor: Sensor): View {
   const tip = el("div", "tip");
   tip.hidden = true;
   plot.append(canvas, tip);
-  canvas.addEventListener("pointermove", (e) => {
-    hover = { index, x: e.offsetX };
-    queueRender();
-  });
-  canvas.addEventListener("pointerleave", () => {
-    hover = null;
-    queueRender();
-  });
 
   const legend = el("footer", "legend");
-  const nowItem = el("div", "legend-item");
-  const now = el("span", "legend-value");
-  nowItem.append(el("span", "swatch"), el("span", "legend-label", "Current"), now);
-  const peakItem = el("div", "legend-item");
-  const peakLabel = el("span", "legend-label");
-  const peak = el("span", "legend-value");
-  peakItem.append(peakLabel, peak);
-  legend.append(nowItem, peakItem);
+  const items: LegendItem[] = [];
+  if (mode === "area") {
+    items.push(legendItem(legend, "Current", theme.line));
+  } else if (mode === "lines") {
+    sensors.forEach((s, k) => items.push(legendItem(legend, s.label, seriesColor(k, sensors.length, theme))));
+  } else {
+    // Full width: these labels carry a sensor name ("Hottest: Core 7").
+    items.push(legendItem(legend, "Hottest", theme.line, true), legendItem(legend, "Coolest", undefined, true));
+  }
+  items.push(legendItem(legend, "", undefined, mode === "band"));
 
   const limits = el("div", "limits");
   const safe = el("b");
@@ -259,8 +329,18 @@ function buildView(index: number, sensor: Sensor): View {
   limits.append(safeItem, throttleItem, source);
 
   card.append(head, plot, legend, limits);
+  const view: View = { group, mode, card, canvas, tip, pill, items, safe, throttle, source };
 
-  return { index, card, canvas, tip, pill, now, peakLabel, peak, safe, throttle, source };
+  edit.addEventListener("click", () => openEditor(view));
+  canvas.addEventListener("pointermove", (e) => {
+    hover = { view, x: e.offsetX };
+    queueRender();
+  });
+  canvas.addEventListener("pointerleave", () => {
+    hover = null;
+    queueRender();
+  });
+  return view;
 }
 
 // ---------- rendering ----------
@@ -272,71 +352,138 @@ function queueRender(): void {
 function render(): void {
   frame = 0;
   if (!snap) return;
+  if (shownFanKey() !== shownFans) buildGauges();
   const end = snap.times[snap.times.length - 1] ?? Date.now();
   const start = end - settings.windowSecs * 1000;
   const counts: Record<Status, number> = { ok: 0, warm: 0, hot: 0, offline: 0 };
   const loadInputs: LoadInput[] = [];
 
   for (const view of views) {
-    const sensor = snap.sensors[view.index];
-    const values = snap.series[view.index];
-    const { safe, throttle, custom } = limitsOf(sensor);
-    const current = values[values.length - 1] ?? null;
-    const status = statusOf(current, safe, throttle);
-    counts[status]++;
-    if (current != null) loadInputs.push({ name: sensorName(sensor), value: current, throttle });
+    const sensors = view.group.members.map((i) => snap!.sensors[i]);
+    const series = view.group.members.map((i) => snap!.series[i]);
+    // Every member shares these; that is what put them in one group.
+    const { safe, throttle, custom } = limitsOf(sensors[0]);
+    const currents = series.map((values) => values[values.length - 1] ?? null);
+    const statuses = currents.map((c) => statusOf(c, safe, throttle));
+    statuses.forEach((s) => counts[s]++);
+    currents.forEach((c, k) => {
+      if (c != null) loadInputs.push({ name: sensorName(sensors[k]), value: c, throttle });
+    });
 
     let peak: number | null = null;
-    for (let i = values.length - 1; i >= 0 && snap.times[i] >= start; i--) {
-      const v = values[i];
-      if (v != null && (peak == null || v > peak)) peak = v;
+    for (const values of series) {
+      for (let i = values.length - 1; i >= 0 && snap.times[i] >= start; i--) {
+        const v = values[i];
+        if (v != null && (peak == null || v > peak)) peak = v;
+      }
     }
 
+    const status = SEVERITY.find((s) => statuses.includes(s)) ?? "offline";
     view.card.dataset.status = status;
     setStatus(view.pill, status);
-    view.now.textContent = fmtTemp(current);
-    view.peakLabel.textContent = `Peak, last ${windowLabel()}`;
-    view.peak.textContent = fmtTemp(peak);
+    renderLegend(view, sensors, currents, peak);
     view.safe.textContent = fmtLimit(safe);
     view.throttle.textContent = fmtLimit(throttle);
-    view.source.textContent = custom ? "custom" : sensor.thresholds.source;
-    view.source.title = sensor.thresholds.basis;
+    const sources = new Set(sensors.map((s) => s.thresholds.source));
+    view.source.textContent = custom ? "custom" : sources.size === 1 ? [...sources][0] : "mixed";
+    view.source.title = [...new Set(sensors.map((s) => s.thresholds.basis))].join("\n");
 
     const point = drawChart(
       view.canvas,
       {
         times: snap.times,
-        values,
+        series,
         start,
         end,
         safe,
         throttle,
-        hoverX: hover?.index === view.index ? hover.x : null,
+        hoverX: hover?.view === view ? hover.x : null,
         spanLabel: windowLabel(),
       },
       theme,
     );
-    renderTip(view, point, end);
+    renderTip(view, sensors, series, point, end);
   }
 
-  fanViews.forEach((view, i) => renderFan(view, snap!.fanReadings[i] ?? null, settings.fanPeaks[view.fan.id]));
   if (loadView) {
-    const worst: Status = counts.hot ? "hot" : counts.warm ? "warm" : counts.ok ? "ok" : "offline";
+    const worst = SEVERITY.find((s) => counts[s] > 0) ?? "offline";
     renderLoad(loadView, loadInputs, worst);
+  }
+  for (const view of fanViews) {
+    const i = snap.fans.indexOf(view.fan);
+    renderFan(view, snap.fanReadings[i] ?? null, settings.fanPeaks[view.fan.id]);
   }
   renderSummary(counts);
 }
 
-function renderTip(view: View, point: HoverPoint | null, end: number): void {
-  if (!point) {
+interface Reading {
+  sensor: Sensor;
+  value: number;
+}
+
+/** Hottest and coolest of a set of readings, with the sensor each belongs to. */
+function extremes(sensors: Sensor[], values: (number | null)[]): { hot: Reading | null; cool: Reading | null } {
+  const readings = values.flatMap((value, k) => (value == null ? [] : [{ sensor: sensors[k], value }]));
+  if (!readings.length) return { hot: null, cool: null };
+  const hot = readings.reduce((a, b) => (b.value > a.value ? b : a));
+  const cool = readings.reduce((a, b) => (b.value < a.value ? b : a));
+  return { hot, cool };
+}
+
+function renderLegend(view: View, sensors: Sensor[], currents: (number | null)[], peak: number | null): void {
+  const items = view.items;
+  const peakItem = items[items.length - 1];
+  peakItem.label.textContent = `Peak, last ${windowLabel()}`;
+  peakItem.value.textContent = fmtTemp(peak);
+  if (view.mode === "area") {
+    items[0].value.textContent = fmtTemp(currents[0]);
+  } else if (view.mode === "lines") {
+    currents.forEach((c, k) => (items[k].value.textContent = fmtTemp(c)));
+  } else {
+    const { hot, cool } = extremes(sensors, currents);
+    items[0].label.textContent = hot ? `Hottest: ${hot.sensor.label}` : "Hottest";
+    items[0].value.textContent = fmtTemp(hot?.value);
+    items[1].label.textContent = cool ? `Coolest: ${cool.sensor.label}` : "Coolest";
+    items[1].value.textContent = fmtTemp(cool?.value);
+  }
+}
+
+function renderTip(
+  view: View,
+  sensors: Sensor[],
+  series: (number | null)[][],
+  point: HoverPoint | null,
+  end: number,
+): void {
+  if (!point || !snap) {
     view.tip.hidden = true;
     return;
   }
+  const at = series.map((values) => values[point.index] ?? null);
+  const rows: HTMLElement[] = [];
+  const row = (label: string, value: number | null, color?: string) => {
+    const r = el("span", "tip-row");
+    if (color) {
+      const swatch = el("span", "swatch");
+      swatch.style.background = color;
+      r.append(swatch);
+    }
+    if (label) r.append(el("span", "", label));
+    r.append(el("b", "", fmtTemp(value)));
+    rows.push(r);
+  };
+  if (view.mode === "area") {
+    row("", at[0]);
+  } else if (view.mode === "lines") {
+    sensors.forEach((s, k) => row(s.label, at[k], seriesColor(k, sensors.length, theme)));
+  } else {
+    const { hot, cool } = extremes(sensors, at);
+    row(hot ? `Hottest: ${hot.sensor.label}` : "Hottest", hot?.value ?? null);
+    row(cool ? `Coolest: ${cool.sensor.label}` : "Coolest", cool?.value ?? null);
+  }
+  const t = snap.times[point.index];
   view.tip.hidden = false;
-  view.tip.replaceChildren(
-    el("b", "", fmtTemp(point.value)),
-    el("span", "", `${fmtClock(point.t)} · ${fmtAgo(end - point.t)}`),
-  );
+  view.tip.replaceChildren(...rows, el("span", "tip-time", `${fmtClock(t)} · ${fmtAgo(end - t)}`));
   const width = view.tip.offsetWidth;
   const flip = point.x + 12 + width > view.canvas.clientWidth;
   view.tip.style.left = `${flip ? point.x - 12 - width : point.x + 12}px`;
@@ -352,7 +499,8 @@ function renderSummary(counts: Record<Status, number>): void {
     span.append(el("b", "", strong), ` ${rest}`);
     summary.append(span);
   };
-  part(String(views.length), views.length === 1 ? "sensor" : "sensors");
+  const total = counts.ok + counts.warm + counts.hot + counts.offline;
+  part(String(total), total === 1 ? "sensor" : "sensors");
   part(String(counts.warm), "warm", counts.warm ? "warm" : undefined);
   part(String(counts.hot), "throttling", counts.hot ? "hot" : undefined);
   if (counts.offline) part(String(counts.offline), "no data", "offline");
@@ -360,20 +508,49 @@ function renderSummary(counts: Record<Status, number>): void {
 
 // ---------- dialogs ----------
 
-function openEditor(index: number): void {
+function openEditor(view: View): void {
   if (!snap) return;
-  const sensor = snap.sensors[index];
+  const sensors = view.group.members.map((i) => snap!.sensors[i]);
   const dialog = $<HTMLDialogElement>("#editor");
   const form = $<HTMLFormElement>("form", dialog);
-  const { safe, throttle } = limitsOf(sensor);
-  const defaults = sensor.thresholds;
+  const { safe, throttle } = limitsOf(sensors[0]);
+  const single = sensors.length === 1;
 
-  $("#editor-title").textContent = sensorName(sensor);
-  $("#editor-detail").textContent = `${sensor.detail} · ${sensor.chip}`;
-  $("#editor-basis").textContent = defaults.basis;
+  $("#editor-title").textContent = groupName(view.group);
+  $("#editor-detail").textContent = single
+    ? `${sensors[0].detail} · ${sensors[0].chip}`
+    : `${sensors.length} sensors · ${sensors[0].detail} · ${sensors[0].chip}`;
+  $("#editor-basis").textContent = [...new Set(sensors.map((s) => s.thresholds.basis))].join(" ");
+  const defaults = new Set(
+    sensors.map(
+      (s) =>
+        `keep below ${fmtLimit(s.thresholds.safe)}, throttling likely at ${fmtLimit(s.thresholds.throttle)} ` +
+        `(${s.thresholds.source === "hardware" ? "from hardware" : "estimate"})`,
+    ),
+  );
   $("#editor-defaults").textContent =
-    `Default: keep below ${fmtLimit(defaults.safe)}, throttling likely at ${fmtLimit(defaults.throttle)} ` +
-    `(${defaults.source === "hardware" ? "from hardware" : "estimate"}).`;
+    defaults.size === 1
+      ? `Default: ${[...defaults][0]}.${single ? "" : " New values apply to every sensor in this chart."}`
+      : "The sensors in this chart have different defaults. Reset restores each one.";
+
+  const members = $("#editor-members");
+  members.hidden = single;
+  members.replaceChildren();
+  if (!single) {
+    members.append(el("h3", "", "Sensors in this chart"));
+    for (const s of sensors) {
+      const row = el("div", "member");
+      const hide = el("button", "button", "Hide");
+      hide.type = "button";
+      hide.addEventListener("click", () => {
+        hideIds([s.id]);
+        row.remove();
+      });
+      row.append(el("span", "", s.label), hide);
+      members.append(row);
+    }
+  }
+
   const safeInput = $<HTMLInputElement>("[name=safe]", form);
   const throttleInput = $<HTMLInputElement>("[name=throttle]", form);
   safeInput.value = String(safe);
@@ -383,6 +560,8 @@ function openEditor(index: number): void {
 
   form.onsubmit = (event) => {
     const action = (event.submitter as HTMLButtonElement | null)?.value ?? "save";
+    // Sensors hidden from this dialog no longer belong to the chart.
+    const remaining = sensors.filter((s) => !settings.hidden.includes(s.id));
     if (action === "save") {
       const s = Number(safeInput.value);
       const t = Number(throttleInput.value);
@@ -400,16 +579,19 @@ function openEditor(index: number): void {
         error.hidden = false;
         return;
       }
-      const override: Override = {
-        safe: s === defaults.safe ? null : s,
-        throttle: t === defaults.throttle ? null : t,
-      };
-      if (override.safe == null && override.throttle == null) delete settings.overrides[sensor.id];
-      else settings.overrides[sensor.id] = override;
+      for (const sensor of remaining) {
+        const override: Override = {
+          safe: s === sensor.thresholds.safe ? null : s,
+          throttle: t === sensor.thresholds.throttle ? null : t,
+        };
+        if (override.safe == null && override.throttle == null) delete settings.overrides[sensor.id];
+        else settings.overrides[sensor.id] = override;
+      }
     } else if (action === "reset") {
-      delete settings.overrides[sensor.id];
+      for (const sensor of remaining) delete settings.overrides[sensor.id];
     } else if (action === "hide") {
-      settings.hidden = [...new Set([...settings.hidden, sensor.id])];
+      hideIds(remaining.map((x) => x.id));
+      return;
     } else {
       return;
     }
@@ -425,9 +607,11 @@ function openHidden(): void {
   const dialog = $<HTMLDialogElement>("#hidden");
   const list = $("#hidden-list");
   list.replaceChildren();
-  const byId = new Map(snap.sensors.map((s) => [s.id, s]));
+  const names = new Map<string, string>([
+    ...snap.sensors.map((s) => [s.id, sensorName(s)] as [string, string]),
+    ...snap.fans.map((f) => [f.id, `${fanName(f)} (fan)`] as [string, string]),
+  ]);
   for (const id of settings.hidden) {
-    const sensor = byId.get(id);
     const row = el("li");
     const show = el("button", "button", "Show");
     show.type = "button";
@@ -438,7 +622,7 @@ function openHidden(): void {
       if (settings.hidden.length === 0) dialog.close();
       else openHidden();
     });
-    row.append(el("span", "", sensor ? sensorName(sensor) : `${id} (not present now)`), show);
+    row.append(el("span", "", names.get(id) ?? `${id} (not present now)`), show);
     list.append(row);
   }
   if (!dialog.open) dialog.showModal();

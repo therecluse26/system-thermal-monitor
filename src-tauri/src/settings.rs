@@ -50,6 +50,28 @@ impl Settings {
             .unwrap_or_default()
     }
 
+    /// Moves saved choices from old sensor and fan ids to new ones.
+    /// Returns whether anything moved, so the caller knows to save.
+    pub fn migrate(&mut self, aliases: &[(String, String)]) -> bool {
+        let mut changed = false;
+        for (old, new) in aliases {
+            if let Some(o) = self.overrides.remove(old) {
+                self.overrides.entry(new.clone()).or_insert(o);
+                changed = true;
+            }
+            if self.hidden.remove(old) {
+                self.hidden.insert(new.clone());
+                changed = true;
+            }
+            if let Some(peak) = self.fan_peaks.remove(old) {
+                let kept = self.fan_peaks.entry(new.clone()).or_insert(0);
+                *kept = (*kept).max(peak);
+                changed = true;
+            }
+        }
+        changed
+    }
+
     /// Writes to a temporary file first so a crash never leaves half a file behind.
     pub fn save(&self, path: &Path) -> io::Result<()> {
         if let Some(dir) = path.parent() {
@@ -85,6 +107,16 @@ mod tests {
         );
         s.save(&path).unwrap();
         assert_eq!(Settings::load(&path), s);
+
+        let aliases = [(
+            "k10temp/0000:00:18.3/temp1".to_string(),
+            "k10temp/new/temp1".to_string(),
+        )];
+        let mut moved = s.clone();
+        assert!(moved.migrate(&aliases));
+        assert!(moved.overrides.contains_key("k10temp/new/temp1"));
+        assert!(!moved.overrides.contains_key("k10temp/0000:00:18.3/temp1"));
+        assert!(!moved.migrate(&aliases));
 
         fs::write(&path, r#"{"windowSecs": 60}"#).unwrap();
         let partial = Settings::load(&path);
