@@ -27,6 +27,27 @@ On NixOS, use `--no-bundle`; the installer formats do not suit NixOS.
 If the window stays blank, start the app with `WEBKIT_DISABLE_DMABUF_RENDERER=1`.
 This is a WebKitGTK problem with some GPU drivers, not a problem in this app.
 
+## Releases
+
+Each push to `main` publishes a GitHub release with a `.deb`, an `.rpm` and an AppImage.
+The packages are built on Ubuntu 22.04, so they also run on older distributions.
+Before the build, the release workflow runs the same checks as pull requests: the frontend build, clippy and `cargo test`.
+
+The commit messages since the last release tag decide the new version:
+
+| Commit subject | Bump | Example |
+|---|---|---|
+| `feat: ...` or `feat(scope): ...` | minor | 0.1.3 → 0.2.0 |
+| any type with `!`, such as `fix!: ...`, or a `BREAKING CHANGE:` line in the body | major | 0.2.0 → 1.0.0 |
+| anything else, including messages without a type | patch | 0.1.0 → 0.1.1 |
+
+- The first release uses the version in `src-tauri/tauri.conf.json`.
+- To jump to a version, set it there. When it is higher than the bumped version, it wins.
+- The pipeline does not write the version back into the repository. The release tag holds it.
+- The release notes list the commit subjects since the last release, grouped by type.
+- A push that changes only Markdown files makes no release. Its commits go into the next release.
+- To push without a release, put `[skip ci]` in the commit message.
+
 ## Where the data comes from
 
 The app reads `/sys/class/hwmon` once per second. It needs no root access.
@@ -145,6 +166,9 @@ At start-up, the app moves settings saved under the ids of earlier versions to t
 | `src/gauge.ts` | Ring gauge card shared by the top cards |
 | `src/load.ts` | System thermal load card |
 | `src/fans.ts` | Fan cards: share of maximum speed and spinning rotor |
+| `.github/workflows/ci.yml` | Checks for pull requests: frontend build, clippy, tests |
+| `.github/workflows/release.yml` | Builds the packages and publishes the release |
+| `.github/scripts/` | Chooses the next version; writes the release notes |
 
 ## Tests
 

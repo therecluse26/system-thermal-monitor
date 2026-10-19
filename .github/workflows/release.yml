@@ -1,0 +1,89 @@
+# Publishes a GitHub release with .deb, .rpm and AppImage packages for each push to main.
+# .github/scripts/plan-release.sh picks the version; .github/scripts/changelog.sh writes the notes.
+name: Release
+
+on:
+  push:
+    branches: [main]
+    # Documentation-only pushes make no release. Their commits go into the next release's notes.
+    paths-ignore:
+      - "**.md"
+  workflow_dispatch:
+
+# One release at a time, in push order. A push during a release waits for it to finish.
+# When several pushes wait, only the newest runs; its release includes all their commits.
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  plan:
+    name: Choose the version
+    runs-on: ubuntu-22.04
+    outputs:
+      release: ${{ steps.plan.outputs.release }}
+      version: ${{ steps.plan.outputs.version }}
+      tag: ${{ steps.plan.outputs.tag }}
+      previous: ${{ steps.plan.outputs.previous }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0 # all commits and tags
+
+      - id: plan
+        run: .github/scripts/plan-release.sh >> "$GITHUB_OUTPUT"
+
+  check:
+    uses: ./.github/workflows/ci.yml
+
+  release:
+    name: Build and publish
+    needs: [plan, check]
+    if: needs.plan.outputs.release == 'true' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-22.04 # the oldest glibc available, so the packages run on more distributions
+    permissions:
+      contents: write
+    env:
+      VERSION: ${{ needs.plan.outputs.version }}
+      TAG: ${{ needs.plan.outputs.tag }}
+      PREVIOUS: ${{ needs.plan.outputs.previous }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - uses: ./.github/actions/setup
+
+      # The version goes in through --config, so no commit is needed to bump it.
+      - name: Build the packages
+        env:
+          APPIMAGE_EXTRACT_AND_RUN: 1 # linuxdeploy runs without FUSE
+        run: npm run tauri build -- --bundles deb,rpm,appimage --config "{\"version\":\"$VERSION\"}"
+
+      # "Thermal Monitor_1.2.3_amd64.deb" becomes "thermal-monitor_1.2.3_amd64.deb".
+      - name: Collect the packages
+        run: |
+          mkdir release
+          bundle=src-tauri/target/release/bundle
+          for file in "$bundle"/deb/*.deb "$bundle"/rpm/*.rpm "$bundle"/appimage/*.AppImage; do
+            name=${file##*/}
+            cp "$file" "release/thermal-monitor${name#Thermal Monitor}"
+          done
+          cd release
+          sha256sum -- * > SHA256SUMS
+          ls -l
+
+      - name: Write the release notes
+        run: .github/scripts/changelog.sh "$PREVIOUS" "$TAG" > notes.md
+
+      - name: Publish the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: >-
+          gh release create "$TAG" release/*
+          --target "$GITHUB_SHA"
+          --title "Thermal Monitor $VERSION"
+          --notes-file notes.md
