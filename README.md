@@ -149,8 +149,9 @@ Safety rules:
 - When the sensor stops reading, the fan runs at full speed.
 - The duty rises at once. It falls only after the temperature drops 3 °C, so the fan does not hunt.
 - A curve that starts at 0% stops the fan below its first point. Never do this for a pump.
-- The helper sets no fan while another fan controller runs: `fw-fanctrl`, `fancontrol`, `thinkfan`,
+- The helper sets no fan while another fan controller runs: `fw-fanctrl run`, `fancontrol`, `thinkfan`,
   `coolercontrold`, `fan2go` or `nbfc_service`. It checks every 30 seconds.
+  Client commands such as `fw-fanctrl print`, which `fw-fanctrl-gui` runs, do not count.
 - If the helper gets `SIGKILL`, the fans stay at their last duty. Only root or the out-of-memory killer can do that.
 
 ### Which fans the app can control

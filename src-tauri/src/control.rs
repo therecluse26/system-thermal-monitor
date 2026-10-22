@@ -19,13 +19,16 @@ pub enum EnableFile {
 const AUTO_ONLY_ENABLE: &[&str] = &["framework_laptop"];
 
 /// Programs that set fan speeds themselves. Two controllers on one fan fight each other.
-const OTHER_CONTROLLERS: &[&str] = &[
-    "fw-fanctrl",
-    "fancontrol",
-    "thinkfan",
-    "coolercontrold",
-    "fan2go",
-    "nbfc_service",
+/// The second field names the subcommand that does it, for a program that also has
+/// client commands.
+const OTHER_CONTROLLERS: &[(&str, Option<&str>)] = &[
+    // `fw-fanctrl print` and `use` only talk to the daemon; fw-fanctrl-gui runs them.
+    ("fw-fanctrl", Some("run")),
+    ("fancontrol", None),
+    ("thinkfan", None),
+    ("coolercontrold", None),
+    ("fan2go", None),
+    ("nbfc_service", None),
 ];
 
 /// The name of another fan controller that runs now, if any.
@@ -46,7 +49,11 @@ pub fn other_controller(proc: &Path) -> Option<String> {
         } else {
             program
         };
-        OTHER_CONTROLLERS.contains(&name.as_str()).then_some(name)
+        let &(_, daemon) = OTHER_CONTROLLERS.iter().find(|(n, _)| *n == name)?;
+        if let Some(daemon) = daemon {
+            args.find(|a| a == daemon)?;
+        }
+        Some(name)
     })
 }
 
@@ -143,6 +150,19 @@ mod tests {
              --output-format\0JSON\0run\0",
         );
         assert_eq!(other_controller(&sys.paths().proc).as_deref(), Some("fw-fanctrl"));
+    }
+
+    #[test]
+    fn fw_fanctrl_client_commands_are_not_a_controller() {
+        // fw-fanctrl-gui runs these for its live view; only `fw-fanctrl run` sets fan speeds.
+        let sys = FakeSys::new();
+        sys.write(
+            "proc/5150/cmdline",
+            "/nix/store/x-python3-3.13.13/bin/python3.13\0\
+             /nix/store/y-python3.13-fw-fanctrl-1.0.4/bin/.fw-fanctrl-wrapped\0\
+             --output-format\0JSON\0print\0all\0",
+        );
+        assert_eq!(other_controller(&sys.paths().proc), None);
     }
 
     #[test]
