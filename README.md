@@ -159,6 +159,10 @@ Only root can set fan speeds, so the app splits the work:
 - When there are saved curves, the app starts a small **fan helper** as root through `pkexec`.
   After a cancelled password dialog, Apply in the fan control asks again.
 - Your desktop shows its own password dialog. The app never sees the password.
+- In a sandbox that sets "no new privileges", `pkexec` cannot become root.
+  On NixOS, `appimage-run` runs each AppImage in such a sandbox.
+  There the app starts `pkexec` through `systemd-run --user`, outside the sandbox.
+- If `pkexec` fails, the fan control shows its message, for example "pkexec must be setuid root".
 - The fan helper runs the curves once per second. The window sends it changes through a pipe.
 - When the app closes or crashes, the pipe closes. The helper then gives every fan back to its automatic mode.
 - So curves run only while the app runs.
@@ -276,4 +280,5 @@ cargo test                                           # unit tests, against a fak
 cargo test real_sensors -- --ignored --nocapture     # prints the sensors of this machine as JSON
 cargo test real_fans -- --ignored --nocapture        # prints the fans of this machine as JSON
 cargo test real_monitor -- --ignored --nocapture     # NVML status, counts, and the ids that settings move between
+cargo test leaves_a_sandbox -- --ignored             # needs bwrap: pkexec can become root from a sandbox
 ```
