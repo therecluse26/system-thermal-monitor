@@ -131,9 +131,16 @@ A fan card whose speed the app can set has a mode line under the speed. It shows
 - **Full speed: failsafe**: see the safety rules below.
 - Otherwise, why the setting does not apply now, for example "Waiting for your password".
 
-Click the mode line to choose Automatic or a fixed level from 0% to 100%.
+Click the mode line to choose Automatic, a fixed level from 0% to 100%, or a curve.
 A fixed level is saved as a curve with one point.
-There is no editor for curves with more points yet. They go in `settings.json` (see the example below).
+
+The curve editor shows the duty at each temperature of the sensor you choose:
+
+- Drag a point, or focus it and use the arrow keys (Shift moves in steps of 5).
+- Double-click the grid to add a point. Delete removes the focused point. A curve keeps at least 2 points.
+- The list under the chart takes exact numbers. "Add point" halves the widest gap.
+- A dotted line marks the sensor's temperature now, with the duty the curve gives there.
+- The red zone starts at the sensor's "Throttling likely at" temperature, where the failsafe sets full speed.
 
 Only root can set fan speeds, so the app splits the work:
 
@@ -169,7 +176,7 @@ The driver must have both `pwmN` and `pwmN_enable`.
   The fan cards keep the `cros_ec` fans; their control comes from `framework_laptop`.
 - NVIDIA fans cannot be controlled yet.
 
-### Example curve
+### How curves are saved
 
 ```json
 "fanCurves": {
@@ -184,7 +191,7 @@ The driver must have both `pwmN` and `pwmN_enable`.
 }
 ```
 
-- Close the app before you edit `settings.json`. The app writes its own copy back when it saves.
+- The editor writes this. To edit `settings.json` by hand, close the app first: it writes its own copy back when it saves.
 - Between two points the duty follows a straight line. Outside the points, the nearest point's duty applies.
 - `cargo test real_fans` and `cargo test real_sensors` (with `-- --ignored --nocapture`) print the ids.
 - From an AppImage, the helper runs the AppImage file (`$APPIMAGE`). Root cannot read the user's AppImage mount.

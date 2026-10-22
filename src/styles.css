@@ -761,6 +761,113 @@ dialog p {
   font-variant-numeric: tabular-nums;
 }
 
+.curve-editor {
+  margin: 0 0 12px;
+}
+
+.curve-editor svg {
+  display: block;
+  width: 100%;
+  height: auto;
+  border-radius: 6px;
+  background: var(--surface);
+  touch-action: none;
+  user-select: none;
+}
+
+.curve-grid line {
+  stroke: var(--line);
+}
+
+.curve-grid text,
+.curve-now-label {
+  fill: var(--text-3);
+  font-size: 10px;
+}
+
+.curve-zone {
+  fill: var(--crit-zone);
+}
+
+.curve-failsafe {
+  stroke: var(--crit);
+  stroke-dasharray: 4 3;
+}
+
+.curve-fill {
+  fill: var(--accent-fill);
+}
+
+.curve-line {
+  fill: none;
+  stroke: var(--accent);
+  stroke-width: 2;
+  stroke-linejoin: round;
+}
+
+.curve-now {
+  stroke: var(--text-2);
+  stroke-dasharray: 2 3;
+}
+
+.curve-now-dot {
+  fill: var(--text);
+}
+
+.curve-now-label {
+  fill: var(--text-2);
+}
+
+.curve-point {
+  fill: var(--surface-2);
+  stroke: var(--accent);
+  stroke-width: 2;
+  cursor: grab;
+}
+
+.curve-point:hover,
+.curve-point:focus {
+  fill: var(--accent);
+  outline: none;
+}
+
+.curve-hint {
+  margin: 6px 0 8px;
+  font-size: 12px;
+}
+
+.curve-points {
+  display: grid;
+  gap: 6px;
+  justify-items: start;
+}
+
+.curve-rows {
+  display: grid;
+  gap: 4px;
+  width: 100%;
+}
+
+.curve-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.curve-row-name {
+  min-width: 56px;
+  color: var(--text-2);
+}
+
+.curve-row .input-unit input {
+  width: 64px;
+}
+
+.curve-row .icon-button:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+
 .fields select {
   max-width: 260px;
   padding: 5px 8px;

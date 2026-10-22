@@ -70,21 +70,19 @@
           <legend>Speed</legend>
           <label><input type="radio" name="mode" value="auto" /> Automatic <span class="muted">· the firmware sets it</span></label>
           <label><input type="radio" name="mode" value="fixed" /> Fixed level</label>
-          <label id="fan-control-curve"
-            ><input type="radio" name="mode" value="curve" /> Curve from settings.json
-            <span id="fan-control-points" class="muted"></span
-          ></label>
+          <label><input type="radio" name="mode" value="curve" /> Curve <span class="muted">· the duty follows a sensor</span></label>
         </fieldset>
         <label id="fan-control-level" class="level">
           <input name="level" type="range" min="0" max="100" step="1" />
           <output id="fan-control-level-value"></output>
         </label>
+        <div id="fan-control-editor" hidden></div>
         <p id="fan-control-zero" class="warn-text" hidden>
           0% stops the fan when the hardware allows it. Never use it for a pump. The failsafe still applies.
         </p>
         <div id="fan-control-failsafe" class="fields">
           <label>
-            <span>Full speed when this sensor gets hot</span>
+            <span id="fan-control-sensor-label"></span>
             <select name="sensor"></select>
           </label>
           <p id="fan-control-failsafe-text" class="muted"></p>

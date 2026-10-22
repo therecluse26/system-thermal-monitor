@@ -1,6 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 
+import { buildCurveEditor, DEFAULT_CURVE, type CurveEditor } from "./curve-editor";
 import { chartMode, drawChart, readTheme, seriesColor, type ChartMode, type ChartTheme, type HoverPoint } from "./chart";
 import { buildFanView, fanName, fixedLevel, renderFan, spinning, type FanView } from "./fans";
 import { fmtAgo, fmtClock, fmtLimit, fmtTemp, setStatus, statusOf, type Status } from "./format";
@@ -61,8 +62,10 @@ let theme: ChartTheme;
 let snap: Snapshot | null = null;
 let settings: Settings = { overrides: {}, hidden: [], windowSecs: 300, fanPeaks: {}, fanCurves: {} };
 let fanControl: ControlState = { notice: null, status: { blockedBy: null, fans: [] } };
-/** Refreshes the open fan control dialog when the control state changes. */
+/** Refreshes the open fan control dialog when the control state or a reading changes. */
 let fanDialogUpdate: (() => void) | null = null;
+/** Built once, on the first open of the fan control dialog. */
+let curveEditor: CurveEditor | null = null;
 let views: View[] = [];
 let fanViews: FanView[] = [];
 let loadView: LoadView | null = null;
@@ -426,6 +429,8 @@ function render(): void {
     });
   }
   renderSummary(counts);
+  // The curve editor marks the sensor's temperature now.
+  fanDialogUpdate?.();
 }
 
 interface Reading {
@@ -614,8 +619,7 @@ function openEditor(view: View): void {
   safeInput.focus();
 }
 
-/** Automatic mode, or a fixed level. A fixed level is saved as a curve with one point.
- *  A curve with more points, written in settings.json, shows as a third mode. */
+/** Automatic mode, a fixed level, or a curve. A fixed level is saved as a curve with one point. */
 function openFanControl(fan: Fan): void {
   if (!snap) return;
   const sensors = snap.sensors;
@@ -623,19 +627,19 @@ function openFanControl(fan: Fan): void {
   const form = $<HTMLFormElement>("form", dialog);
   const saved = settings.fanCurves[fan.id];
   const level = fixedLevel(saved);
-  const curve = saved && level == null ? saved : null;
 
   $("#fan-control-title").textContent = fanName(fan);
   $("#fan-control-detail").textContent = `${fan.chip} · ${fan.id}`;
-  $("#fan-control-curve").hidden = !curve;
-  $("#fan-control-points").textContent = curve
-    ? `· ${curve.points.map((p) => `${fmtLimit(p.temp)}: ${p.duty}%`).join(", ")}`
-    : "";
 
+  // The handler of the last open would react to the fields set below.
+  form.oninput = null;
   const modes = form.elements.namedItem("mode") as RadioNodeList;
-  modes.value = !saved ? "auto" : curve ? "curve" : "fixed";
+  modes.value = !saved ? "auto" : level == null ? "curve" : "fixed";
   const levelInput = $<HTMLInputElement>("[name=level]", form);
   levelInput.value = String(level ?? 50);
+  curveEditor ??= buildCurveEditor();
+  $("#fan-control-editor").replaceChildren(curveEditor.root);
+  curveEditor.setPoints(saved && level == null ? saved.points : DEFAULT_CURVE);
   const sensorSelect = $<HTMLSelectElement>("[name=sensor]", form);
   sensorSelect.replaceChildren(
     ...sensors.map((s) => {
@@ -649,15 +653,24 @@ function openFanControl(fan: Fan): void {
 
   const update = () => {
     const mode = modes.value;
+    const editor = curveEditor!;
     $("#fan-control-level").hidden = mode !== "fixed";
     $("#fan-control-level-value").textContent = `${levelInput.value}%`;
-    $("#fan-control-zero").hidden = mode !== "fixed" || Number(levelInput.value) !== 0;
+    $("#fan-control-editor").hidden = mode !== "curve";
+    $("#fan-control-zero").hidden =
+      mode === "fixed" ? Number(levelInput.value) !== 0 : mode !== "curve" || !editor.points().some((p) => p.duty === 0);
     $("#fan-control-failsafe").hidden = mode === "auto";
+    $("#fan-control-sensor-label").textContent =
+      mode === "curve" ? "The curve follows this sensor" : "Full speed when this sensor gets hot";
     const sensor = sensors.find((s) => s.id === sensorSelect.value);
-    $("#fan-control-failsafe-text").textContent = sensor
-      ? `At ${fmtLimit(limitsOf(sensor).throttle)} ("Throttling likely at"), or when the sensor stops reading, ` +
-        "the fan runs at full speed."
-      : "";
+    const throttle = sensor ? limitsOf(sensor).throttle : null;
+    editor.setMarkers(sensor ? currentTemp(sensor) : null, throttle);
+    $("#fan-control-failsafe-text").textContent =
+      throttle == null
+        ? ""
+        : `At ${fmtLimit(throttle)} ("Throttling likely at"), or when the sensor stops reading, ` +
+          "the fan runs at full speed." +
+          (mode === "curve" ? " The duty falls only after the temperature drops 3 °C." : "");
     const notice = $("#fan-control-notice");
     notice.textContent = fanControl.notice ? `Fan control does not apply now: ${fanControl.notice}.` : "";
     notice.hidden = !fanControl.notice;
@@ -675,14 +688,20 @@ function openFanControl(fan: Fan): void {
       delete settings.fanCurves[fan.id];
     } else if (mode === "fixed") {
       settings.fanCurves[fan.id] = { sensor: sensorSelect.value, points: [{ temp: 0, duty: Number(levelInput.value) }] };
-    } else if (curve) {
-      settings.fanCurves[fan.id] = { ...curve, sensor: sensorSelect.value };
+    } else {
+      settings.fanCurves[fan.id] = { sensor: sensorSelect.value, points: curveEditor!.points() };
     }
     // Retry after a cancelled password dialog, even when the curves did not change.
     void saveSettings().then(() => invoke("retry_fan_control"));
     queueRender();
   };
   dialog.showModal();
+}
+
+/** The sensor's latest reading, or null when it has none. */
+function currentTemp(sensor: Sensor): number | null {
+  const values = snap?.series[snap.sensors.indexOf(sensor)];
+  return values?.[values.length - 1] ?? null;
 }
 
 function openHidden(): void {
