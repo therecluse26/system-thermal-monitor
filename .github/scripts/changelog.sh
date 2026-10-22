@@ -64,9 +64,9 @@ cat <<EOF
 
 | Package | For | Command |
 |---|---|---|
-| \`.deb\` | Debian, Ubuntu, Linux Mint, Pop!_OS | \`sudo apt install ./thermal-monitor_${version}_amd64.deb\` |
-| \`.rpm\` | Fedora, RHEL, openSUSE | \`sudo dnf install ./thermal-monitor-${version}-1.x86_64.rpm\` |
-| AppImage | Any distribution | \`chmod +x thermal-monitor_${version}_amd64.AppImage\`, then run it |
+| \`.deb\` | Debian, Ubuntu, Linux Mint, Pop!_OS | \`sudo apt install ./thermite_${version}_amd64.deb\` |
+| \`.rpm\` | Fedora, RHEL, openSUSE | \`sudo dnf install ./thermite-${version}-1.x86_64.rpm\` |
+| AppImage | Any distribution | \`chmod +x thermite_${version}_amd64.AppImage\`, then run it |
 
 On NixOS, run the AppImage with \`appimage-run\`.
 To check a download: \`sha256sum --check --ignore-missing SHA256SUMS\`.

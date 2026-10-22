@@ -1,8 +1,8 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "Thermal Monitor",
+  "productName": "Thermite",
   "version": "0.1.0",
-  "identifier": "local.thermal-monitor",
+  "identifier": "local.thermite",
   "build": {
     "beforeDevCommand": "npm run dev",
     "devUrl": "http://localhost:1420",
@@ -12,7 +12,7 @@
   "app": {
     "windows": [
       {
-        "title": "Thermal Monitor",
+        "title": "Thermite",
         "width": 1320,
         "height": 900,
         "minWidth": 560,
@@ -30,6 +30,15 @@
     "targets": "all",
     "category": "Utility",
     "shortDescription": "Temperature charts for every hardware sensor",
+    "linux": {
+      "deb": {
+        "conflicts": ["thermal-monitor"],
+        "replaces": ["thermal-monitor"]
+      },
+      "rpm": {
+        "obsoletes": ["thermal-monitor"]
+      }
+    },
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",

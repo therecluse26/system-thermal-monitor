@@ -55,6 +55,16 @@ impl Settings {
             .unwrap_or_default()
     }
 
+    /// Reads `path`, or the settings saved under the app's old name while `path` does
+    /// not exist yet. Returns whether they came from `old`, so the caller saves them
+    /// at `path`. The old file stays where it is.
+    pub fn load_or_adopt(path: &Path, old: &Path) -> (Self, bool) {
+        if !path.exists() && old.exists() {
+            return (Self::load(old), true);
+        }
+        (Self::load(path), false)
+    }
+
     /// Moves saved choices from old sensor and fan ids to new ones.
     /// Returns whether anything moved, so the caller knows to save.
     pub fn migrate(&mut self, aliases: &[(String, String)]) -> bool {
@@ -136,6 +146,27 @@ mod tests {
         let partial = Settings::load(&path);
         assert_eq!(partial.window_secs, 60);
         assert!(partial.overrides.is_empty());
+    }
+
+    #[test]
+    fn settings_of_the_old_app_name_carry_over_once() {
+        let dir = tempfile::tempdir().unwrap();
+        let new = dir.path().join("local.thermite/settings.json");
+        let old = dir.path().join("local.thermal-monitor/settings.json");
+        fs::create_dir_all(old.parent().unwrap()).unwrap();
+        fs::write(&old, r#"{"windowSecs": 600}"#).unwrap();
+
+        let (first, adopted) = Settings::load_or_adopt(&new, &old);
+        assert_eq!((first.window_secs, adopted), (600, true));
+
+        Settings {
+            window_secs: 60,
+            ..first
+        }
+        .save(&new)
+        .unwrap();
+        let (second, adopted) = Settings::load_or_adopt(&new, &old);
+        assert_eq!((second.window_secs, adopted), (60, false));
     }
 
     #[test]

@@ -63,14 +63,14 @@ jobs:
           APPIMAGE_EXTRACT_AND_RUN: 1 # linuxdeploy runs without FUSE
         run: npm run tauri build -- --bundles deb,rpm,appimage --config "{\"version\":\"$VERSION\"}"
 
-      # "Thermal Monitor_1.2.3_amd64.deb" becomes "thermal-monitor_1.2.3_amd64.deb".
+      # "Thermite_1.2.3_amd64.deb" becomes "thermite_1.2.3_amd64.deb".
       - name: Collect the packages
         run: |
           mkdir release
           bundle=src-tauri/target/release/bundle
           for file in "$bundle"/deb/*.deb "$bundle"/rpm/*.rpm "$bundle"/appimage/*.AppImage; do
             name=${file##*/}
-            cp "$file" "release/thermal-monitor${name#Thermal Monitor}"
+            cp "$file" "release/thermite${name#Thermite}"
           done
           cd release
           sha256sum -- * > SHA256SUMS
@@ -85,5 +85,5 @@ jobs:
         run: >-
           gh release create "$TAG" release/*
           --target "$GITHUB_SHA"
-          --title "Thermal Monitor $VERSION"
+          --title "Thermite $VERSION"
           --notes-file notes.md

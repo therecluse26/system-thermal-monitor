@@ -114,16 +114,19 @@ fn main() {
             let settings_path = app.path().app_config_dir()?.join("settings.json");
             let monitor = Monitor::new(SysPaths::default());
             eprintln!(
-                "thermal-monitor: {} temperature sensors and {} fans found; settings at {}",
+                "thermite: {} temperature sensors and {} fans found; settings at {}",
                 monitor.sensor_count(),
                 monitor.fan_count(),
                 settings_path.display()
             );
             let handle = app.handle().clone();
-            let mut settings = Settings::load(&settings_path);
-            if settings.migrate(&monitor.aliases()) {
+            // Thermite was called Thermal Monitor, and kept its settings here.
+            let old_path = app.path().config_dir()?.join("local.thermal-monitor/settings.json");
+            let (mut settings, adopted) = Settings::load_or_adopt(&settings_path, &old_path);
+            let migrated = settings.migrate(&monitor.aliases());
+            if adopted || migrated {
                 if let Err(e) = settings.save(&settings_path) {
-                    eprintln!("thermal-monitor: could not save migrated settings: {e}");
+                    eprintln!("thermite: could not save the moved settings: {e}");
                 }
             }
             app.manage(AppState {
@@ -147,5 +150,5 @@ fn main() {
             retry_fan_control
         ])
         .run(tauri::generate_context!())
-        .expect("error while running Thermal Monitor");
+        .expect("error while running Thermite");
 }

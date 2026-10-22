@@ -3374,7 +3374,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "thermal-monitor"
+name = "thermite"
 version = "0.1.0"
 dependencies = [
  "libc",

@@ -1,5 +1,5 @@
 [package]
-name = "thermal-monitor"
+name = "thermite"
 version = "0.1.0"
 description = "Charts every hardware temperature sensor over time, with safe and throttle thresholds"
 edition = "2021"

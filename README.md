@@ -1,6 +1,7 @@
-# Thermal Monitor
+# Thermite
 
-A Tauri desktop app that charts every hardware temperature sensor over time.
+A Tauri desktop app that charts every hardware temperature sensor over time, and sets fan speeds.
+Up to version 0.2, Thermite was called Thermal Monitor.
 The charts follow the look of KDE System Monitor.
 Sensors of one device that share their thresholds draw as one chart, for example both DIMMs.
 Each chart shows two thresholds:
@@ -17,7 +18,7 @@ The fan icon in the ring spins faster as the fan does.
 ```sh
 npm install
 npm run tauri dev                       # development, with hot reload
-npm run tauri build -- --no-bundle      # release binary: src-tauri/target/release/thermal-monitor
+npm run tauri build -- --no-bundle      # release binary: src-tauri/target/release/thermite
 ```
 
 `CARGO_TARGET_DIR` moves the release binary when you set it.
@@ -47,6 +48,7 @@ The commit messages since the last release tag decide the new version:
 - The release notes list the commit subjects since the last release, grouped by type.
 - A push that changes only Markdown files makes no release. Its commits go into the next release.
 - To push without a release, put `[skip ci]` in the commit message.
+- The `thermite` packages replace the `thermal-monitor` packages of versions up to 0.2.
 
 ## Where the data comes from
 
@@ -207,7 +209,8 @@ Hover the tag, or open the editor, to see the reason.
 | Anything else | `max`, then `crit` − 5 °C, else 95 °C estimate | 10–15 °C lower |
 
 The edit button on each chart sets custom values or hides the chart.
-The app saves these choices in `~/.config/local.thermal-monitor/settings.json`.
+The app saves these choices in `~/.config/local.thermite/settings.json`.
+On its first start, Thermite copies the settings of Thermal Monitor from `~/.config/local.thermal-monitor/`.
 
 ## Saved settings
 

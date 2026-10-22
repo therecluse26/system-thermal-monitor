@@ -3,7 +3,7 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Thermal Monitor</title>
+    <title>Thermite</title>
     <script type="module" src="/src/main.ts"></script>
   </head>
   <body>
@@ -13,7 +13,7 @@
           <path d="M64 400V330l66-14 60 6 56-54 58 14 56-72 52 18 36-52v224z" fill="currentColor" fill-opacity=".28" />
           <path d="M64 330l66-14 60 6 56-54 58 14 56-72 52 18 36-52" fill="none" stroke="currentColor" stroke-width="36" stroke-linecap="round" stroke-linejoin="round" />
         </svg>
-        Thermal Monitor
+        Thermite
       </div>
       <div id="summary" class="summary" aria-live="polite"></div>
       <div id="window" class="segmented" role="group" aria-label="Time window"></div>
@@ -28,7 +28,7 @@
       <div id="empty" class="empty" hidden>
         <h2>No temperature sensors found</h2>
         <p>
-          Thermal Monitor reads <code>/sys/class/hwmon</code>. Check that the sensor drivers for your
+          Thermite reads <code>/sys/class/hwmon</code>. Check that the sensor drivers for your
           hardware are loaded, for example <code>k10temp</code>, <code>coretemp</code> or <code>nvme</code>.
         </p>
       </div>

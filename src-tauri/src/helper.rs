@@ -143,7 +143,7 @@ impl Controller {
                 return true;
             }
             if let Err(e) = held.control.release(held.restore.as_deref()) {
-                eprintln!("thermal-monitor: could not give {id} back to automatic mode: {e}");
+                eprintln!("thermite: could not give {id} back to automatic mode: {e}");
             }
             false
         });
@@ -259,7 +259,7 @@ pub fn serve(
                         break;
                     }
                 }
-                Err(e) => eprintln!("thermal-monitor: fan helper ignored a plan it could not read: {e}"),
+                Err(e) => eprintln!("thermite: fan helper ignored a plan it could not read: {e}"),
             }
         }
     });
@@ -423,7 +423,7 @@ impl Link {
                 thread::spawn(move || watch(stdout, child, generation, &shared, &on_change));
             }
             Err(e) => {
-                eprintln!("thermal-monitor: could not start the fan helper: {e}");
+                eprintln!("thermite: could not start the fan helper: {e}");
                 let mut shared = self.shared.lock().unwrap();
                 shared.running = false;
                 update(&mut shared, notice(format!("Could not start the fan helper: {e}")), &self.on_change);
@@ -481,7 +481,7 @@ fn watch(stdout: ChildStdout, mut child: Child, generation: u64, shared: &Mutex<
         Ok(exit) => format!("Fan helper stopped ({exit})"),
         Err(e) => format!("Fan helper stopped: {e}"),
     };
-    eprintln!("thermal-monitor: fan curves are off: {reason}");
+    eprintln!("thermite: fan curves are off: {reason}");
     update(&mut shared, notice(reason), on_change);
 }
 
@@ -497,7 +497,7 @@ fn log_status(line: &str, status: &Status, logged: &mut Option<LogKey>) {
         .collect();
     let key = Some((status.blocked_by.clone(), fans));
     if key != *logged {
-        eprintln!("thermal-monitor: fan helper: {line}");
+        eprintln!("thermite: fan helper: {line}");
         *logged = key;
     }
 }
