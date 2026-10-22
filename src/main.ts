@@ -1,9 +1,9 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 
-import { buildCurveEditor, DEFAULT_CURVE, type CurveEditor } from "./curve-editor";
 import { chartMode, drawChart, readTheme, seriesColor, type ChartMode, type ChartTheme, type HoverPoint } from "./chart";
-import { buildFanView, fanName, fixedLevel, renderFan, spinning, type FanView } from "./fans";
+import { buildControlPanel, type ControlPanel, type SensorInfo } from "./fan-control";
+import { buildFanView, fanName, renderFan, spinning, type FanView } from "./fans";
 import { fmtAgo, fmtClock, fmtLimit, fmtTemp, setStatus, statusOf, type Status } from "./format";
 import { buildLoadView, renderLoad, type LoadInput, type LoadView } from "./load";
 import type { Category, ControlState, Fan, FanReading, Override, Sample, Sensor, Settings, Snapshot } from "./types";
@@ -64,8 +64,6 @@ let settings: Settings = { overrides: {}, hidden: [], windowSecs: 300, fanPeaks:
 let fanControl: ControlState = { notice: null, status: { blockedBy: null, fans: [] } };
 /** Refreshes the open fan control dialog when the control state or a reading changes. */
 let fanDialogUpdate: (() => void) | null = null;
-/** Built once, on the first open of the fan control dialog. */
-let curveEditor: CurveEditor | null = null;
 let views: View[] = [];
 let fanViews: FanView[] = [];
 let loadView: LoadView | null = null;
@@ -182,12 +180,22 @@ function nameNode(s: Sensor, withLabel: boolean): HTMLElement {
   return node;
 }
 
-/** A fan stays out of the top row until it has turned once, unless its controller asks
- *  it to turn. This drops empty fan headers on desktop boards. */
-function fanShown(i: number): boolean {
+/** A fan counts once it has turned, or when its controller asks it to turn.
+ *  This drops empty fan headers on desktop boards. */
+function fanPresent(i: number): boolean {
   const fan = snap!.fans[i];
-  if (settings.hidden.includes(fan.id)) return false;
   return spun.has(fan.id) || (settings.fanPeaks[fan.id] ?? 0) > 0 || (snap!.fanReadings[i]?.target ?? 0) > 0;
+}
+
+function fanShown(i: number): boolean {
+  return !settings.hidden.includes(snap!.fans[i].id) && fanPresent(i);
+}
+
+/** The fans that the fan control sets: each fan whose speed the app can set, when it is present
+ *  or has a setting. Hidden fans count too, because hiding changes only the display. */
+function controlledFans(): Fan[] {
+  if (!snap) return [];
+  return snap.fans.filter((fan, i) => fan.controllable && (fan.id in settings.fanCurves || fanPresent(i)));
 }
 
 function shownFanKey(): string {
@@ -265,12 +273,11 @@ function buildGauges(): void {
   if (!snap) return;
   const gauges = $("#gauges");
   loadView = snap.sensors.length > 0 ? buildLoadView() : null;
-  fanViews = snap.fans.flatMap((fan, i) =>
-    fanShown(i) ? [buildFanView(fan, () => hideIds([fan.id]), () => openFanControl(fan))] : [],
-  );
+  fanViews = snap.fans.flatMap((fan, i) => (fanShown(i) ? [buildFanView(fan, () => hideIds([fan.id]))] : []));
   shownFans = shownFanKey();
   gauges.replaceChildren(...(loadView ? [loadView.card] : []), ...fanViews.map((v) => v.card));
   gauges.hidden = gauges.childElementCount === 0;
+  $("#fan-button").hidden = controlledFans().length === 0;
 }
 
 function legendItem(parent: HTMLElement, label: string, color?: string, wide = false): LegendItem {
@@ -619,63 +626,84 @@ function openEditor(view: View): void {
   safeInput.focus();
 }
 
-/** Automatic mode, a fixed level, or a curve. A fixed level is saved as a curve with one point. */
-function openFanControl(fan: Fan): void {
-  if (!snap) return;
-  const sensors = snap.sensors;
+/** One setting for all fans, or a setting for each fan: Automatic, a fixed level, or a curve.
+ *  The dialog opens on "All fans" while every fan has the same setting. */
+function openFanControl(): void {
+  const fans = controlledFans();
+  if (!snap || fans.length === 0) return;
   const dialog = $<HTMLDialogElement>("#fan-control");
   const form = $<HTMLFormElement>("form", dialog);
-  const saved = settings.fanCurves[fan.id];
-  const level = fixedLevel(saved);
-
-  $("#fan-control-title").textContent = fanName(fan);
-  $("#fan-control-detail").textContent = `${fan.chip} · ${fan.id}`;
-
-  // The handler of the last open would react to the fields set below.
+  // The handler of the last open would react to the panels loaded below.
   form.oninput = null;
-  const modes = form.elements.namedItem("mode") as RadioNodeList;
-  modes.value = !saved ? "auto" : level == null ? "curve" : "fixed";
-  const levelInput = $<HTMLInputElement>("[name=level]", form);
-  levelInput.value = String(level ?? 50);
-  curveEditor ??= buildCurveEditor();
-  $("#fan-control-editor").replaceChildren(curveEditor.root);
-  curveEditor.setPoints(saved && level == null ? saved.points : DEFAULT_CURVE);
-  const sensorSelect = $<HTMLSelectElement>("[name=sensor]", form);
-  sensorSelect.replaceChildren(
-    ...sensors.map((s) => {
-      const option = el("option", "", sensorName(s));
-      option.value = s.id;
-      return option;
-    }),
-  );
-  sensorSelect.value = saved?.sensor ?? "";
-  if (!sensorSelect.value) sensorSelect.value = (sensors.find((s) => s.category === "cpu") ?? sensors[0])?.id ?? "";
+
+  const info: SensorInfo = {
+    sensors: snap.sensors,
+    name: sensorName,
+    throttle: (s) => limitsOf(s).throttle,
+    now: currentTemp,
+  };
+  const saved = fans.map((fan) => settings.fanCurves[fan.id]);
+  const all = buildControlPanel(info, { subject: fans.length === 1 ? "the fan" : "every fan" });
+  all.load(saved[0]);
+  const each = fans.map((fan, i) => {
+    const panel = buildControlPanel(info, { title: fanName(fan), detail: `${fan.chip} · ${fan.id}`, subject: "the fan" });
+    panel.load(saved[i]);
+    return panel;
+  });
+  $("#fan-control-all").replaceChildren(all.root);
+  $("#fan-control-fans").replaceChildren(...each.map((p) => p.root));
+
+  type Scope = "all" | "individual";
+  const same = new Set(saved.map((c) => JSON.stringify(c ?? null))).size === 1;
+  let scope: Scope = same ? "all" : "individual";
+  /** Each panel's setting as last seen. The curve editor also sends input events when it only
+   *  redraws, so a changed setting, not an event, shows which panel the user changed. */
+  const seen = new Map<ControlPanel, string>();
+  /** The panel changed last since the dialog opened or the scope changed. */
+  let edited: ControlPanel | null = null;
+  const look = () => {
+    for (const panel of [all, ...each]) {
+      const value = JSON.stringify(panel.value());
+      if (seen.has(panel) && seen.get(panel) !== value) edited = panel;
+      seen.set(panel, value);
+    }
+  };
+  look();
+  const scopeButtons = [...document.querySelectorAll<HTMLButtonElement>("#fan-control-scope button")];
+  $("#fan-control-scope").hidden = fans.length === 1;
+  const names = fans.map(fanName);
+  const fanList = names.length === 1 ? names[0] : `${names.slice(0, -1).join(", ")} and ${names[names.length - 1]}`;
 
   const update = () => {
-    const mode = modes.value;
-    const editor = curveEditor!;
-    $("#fan-control-level").hidden = mode !== "fixed";
-    $("#fan-control-level-value").textContent = `${levelInput.value}%`;
-    $("#fan-control-editor").hidden = mode !== "curve";
-    $("#fan-control-zero").hidden =
-      mode === "fixed" ? Number(levelInput.value) !== 0 : mode !== "curve" || !editor.points().some((p) => p.duty === 0);
-    $("#fan-control-failsafe").hidden = mode === "auto";
-    $("#fan-control-sensor-label").textContent =
-      mode === "curve" ? "The curve follows this sensor" : "Full speed when this sensor gets hot";
-    const sensor = sensors.find((s) => s.id === sensorSelect.value);
-    const throttle = sensor ? limitsOf(sensor).throttle : null;
-    editor.setMarkers(sensor ? currentTemp(sensor) : null, throttle);
-    $("#fan-control-failsafe-text").textContent =
-      throttle == null
-        ? ""
-        : `At ${fmtLimit(throttle)} ("Throttling likely at"), or when the sensor stops reading, ` +
-          "the fan runs at full speed." +
-          (mode === "curve" ? " The duty falls only after the temperature drops 3 °C." : "");
+    for (const button of scopeButtons) button.setAttribute("aria-pressed", String(button.dataset.scope === scope));
+    $("#fan-control-all").hidden = scope !== "all";
+    $("#fan-control-fans").hidden = scope !== "individual";
+    $("#fan-control-detail").textContent =
+      fans.length === 1 ? fanList : scope === "all" ? `One setting for ${fanList}.` : "A setting for each fan.";
+    for (const panel of scope === "all" ? [all] : each) panel.update();
     const notice = $("#fan-control-notice");
     notice.textContent = fanControl.notice ? `Fan control does not apply now: ${fanControl.notice}.` : "";
     notice.hidden = !fanControl.notice;
   };
-  form.oninput = update;
+  for (const button of scopeButtons) {
+    button.onclick = () => {
+      const next = button.dataset.scope as Scope;
+      if (next === scope) return;
+      // A change carries over: all fans take it, or each fan starts from it.
+      if (edited) {
+        const value = edited.value();
+        for (const panel of next === "all" ? [all] : each) panel.load(value);
+        look();
+      }
+      edited = null;
+      scope = next;
+      update();
+    };
+  }
+  form.oninput = () => {
+    look();
+    update();
+  };
   update();
   fanDialogUpdate = update;
   dialog.onclose = () => (fanDialogUpdate = null);
@@ -683,14 +711,11 @@ function openFanControl(fan: Fan): void {
   form.onsubmit = (event) => {
     const action = (event.submitter as HTMLButtonElement | null)?.value ?? "apply";
     if (action !== "apply") return;
-    const mode = modes.value;
-    if (mode === "auto") {
-      delete settings.fanCurves[fan.id];
-    } else if (mode === "fixed") {
-      settings.fanCurves[fan.id] = { sensor: sensorSelect.value, points: [{ temp: 0, duty: Number(levelInput.value) }] };
-    } else {
-      settings.fanCurves[fan.id] = { sensor: sensorSelect.value, points: curveEditor!.points() };
-    }
+    fans.forEach((fan, i) => {
+      const curve = (scope === "all" ? all : each[i]).value();
+      if (curve) settings.fanCurves[fan.id] = curve;
+      else delete settings.fanCurves[fan.id];
+    });
     // Retry after a cancelled password dialog, even when the curves did not change.
     void saveSettings().then(() => invoke("retry_fan_control"));
     queueRender();
@@ -763,6 +788,7 @@ async function start(): Promise<void> {
   theme = readTheme();
   buildWindowButtons();
   $("#hidden-button").addEventListener("click", openHidden);
+  $("#fan-button").addEventListener("click", openFanControl);
   $("#show-all").addEventListener("click", () => {
     settings.hidden = [];
     void saveSettings();

@@ -16,8 +16,8 @@ const HIDE_ICON =
 
 export interface FanView extends GaugeCard {
   fan: Fan;
-  /** The mode line, which opens the fan control. null when the app cannot set this fan's speed. */
-  control: HTMLButtonElement | null;
+  /** The mode line: what sets the fan's speed now. null when the app cannot set this fan's speed. */
+  control: HTMLElement | null;
 }
 
 /** What the fan card needs to know about the control of its fan. */
@@ -39,7 +39,7 @@ export function fixedLevel(curve: FanCurve | undefined): number | null {
 function controlLine(info: ControlInfo): { text: string; hint: string; state: "auto" | "on" | "off" | "failsafe" } {
   const { curve, status, notice } = info;
   if (!curve) {
-    return { text: "Automatic", hint: "The firmware sets the speed. Click to set it yourself.", state: "auto" };
+    return { text: "Automatic", hint: "The firmware sets the speed. To set it yourself, use Fan control in the top bar.", state: "auto" };
   }
   const level = fixedLevel(curve);
   const mode = level != null ? `Fixed ${Math.round(level)}%` : "Curve";
@@ -100,14 +100,11 @@ function share(fan: Fan, r: FanReading, peak: number | undefined) {
   return null;
 }
 
-export function buildFanView(fan: Fan, onHide: () => void, onControl: () => void): FanView {
+export function buildFanView(fan: Fan, onHide: () => void): FanView {
   const view: FanView = { fan, control: null, ...buildGaugeCard("fan", fanName(fan), ROTOR) };
   if (fan.controllable) {
-    const control = document.createElement("button");
-    control.type = "button";
+    const control = document.createElement("div");
     control.className = "fan-control";
-    control.setAttribute("aria-label", `Set the speed of ${fanName(fan)}`);
-    control.addEventListener("click", onControl);
     view.detail.after(control);
     view.control = control;
   }

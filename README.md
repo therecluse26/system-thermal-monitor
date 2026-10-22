@@ -131,8 +131,20 @@ A fan card whose speed the app can set has a mode line under the speed. It shows
 - **Full speed: failsafe**: see the safety rules below.
 - Otherwise, why the setting does not apply now, for example "Waiting for your password".
 
-Click the mode line to choose Automatic, a fixed level from 0% to 100%, or a curve.
+Click **Fan control** in the top bar to set the speeds. The dialog has two views:
+
+- **All fans**: one setting for every fan whose speed the app can set.
+- **Individual fans**: a list with a setting for each fan.
+
+A setting is Automatic, a fixed level from 0% to 100%, or a curve.
 A fixed level is saved as a curve with one point.
+
+- The dialog opens on "All fans" while every fan has the same setting. Otherwise it opens on "Individual fans".
+- If you change a setting and then switch the view, the change carries over.
+  In "All fans", all fans take it. In "Individual fans", each fan starts from it.
+- Apply saves the view that you see.
+- The dialog shows a fan after it has turned once, or when it has a setting. This drops empty fan headers.
+  Hidden fans stay in the dialog, because hiding changes only the display.
 
 The curve editor shows the duty at each temperature of the sensor you choose:
 
@@ -191,6 +203,7 @@ The driver must have both `pwmN` and `pwmN_enable`.
 }
 ```
 
+- "All fans" saves the same curve under each fan id.
 - The editor writes this. To edit `settings.json` by hand, close the app first: it writes its own copy back when it saves.
 - Between two points the duty follows a straight line. Outside the points, the nearest point's duty applies.
 - `cargo test real_fans` and `cargo test real_sensors` (with `-- --ignored --nocapture`) print the ids.
@@ -249,6 +262,8 @@ At start-up, the app moves settings saved under the ids of earlier versions to t
 | `src/gauge.ts` | Ring gauge card shared by the top cards |
 | `src/load.ts` | System thermal load card |
 | `src/fans.ts` | Fan cards: share of maximum speed and spinning rotor |
+| `src/fan-control.ts` | Fan control panel: Automatic, fixed level or curve, for one fan or all fans |
+| `src/curve-editor.ts` | Fan curve editor: drag points, exact numbers, temperature now |
 | `.github/workflows/ci.yml` | Checks for pull requests: frontend build, clippy, tests |
 | `.github/workflows/release.yml` | Builds the packages and publishes the release |
 | `.github/scripts/` | Chooses the next version; writes the release notes |

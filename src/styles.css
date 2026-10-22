@@ -260,23 +260,12 @@ main {
 }
 
 .fan-control {
-  display: block;
-  max-width: 100%;
   margin-top: 2px;
-  padding: 0;
-  border: 0;
-  background: none;
   color: var(--accent);
   font-size: 12px;
-  text-align: left;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-  cursor: pointer;
-}
-
-.fan-control:hover {
-  text-decoration: underline;
 }
 
 .fan-control[data-state="auto"] {
@@ -759,6 +748,43 @@ dialog p {
   min-width: 4ch;
   text-align: right;
   font-variant-numeric: tabular-nums;
+}
+
+#fan-control-scope {
+  margin: 4px 0 0;
+}
+
+.fan-panels {
+  display: grid;
+  gap: 12px;
+  margin: 16px 0 0;
+}
+
+.fan-panel:not(.shared) {
+  padding: 12px 14px 0;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+}
+
+.fan-panel h3 {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.fan-panel:not(.shared) .modes {
+  margin-top: 8px;
+}
+
+/* The panels can be taller than the window; Apply stays in view. Sticky stops at the dialog's
+   padding, so -20px puts the bar on the dialog's lower edge. */
+#fan-control .dialog-actions {
+  position: sticky;
+  bottom: -20px;
+  margin: 16px -20px -20px;
+  padding: 12px 20px 20px;
+  border-top: 1px solid var(--line);
+  background: var(--surface-2);
 }
 
 .curve-editor {
