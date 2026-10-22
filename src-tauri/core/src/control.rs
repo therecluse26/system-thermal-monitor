@@ -29,13 +29,18 @@ const OTHER_CONTROLLERS: &[(&str, Option<&str>)] = &[
     ("coolercontrold", None),
     ("fan2go", None),
     ("nbfc_service", None),
+    // Thermite's own fan daemon. While it runs, the window's fan helper gives way to it.
+    ("thermite-fand", None),
 ];
 
-/// The name of another fan controller that runs now, if any.
+/// The name of another fan controller that runs now, if any. This process does not count,
+/// so the fan daemon does not find itself.
 pub fn other_controller(proc: &Path) -> Option<String> {
+    let own = std::process::id().to_string();
     fs::read_dir(proc).ok()?.flatten().find_map(|entry| {
         let pid = entry.file_name();
-        if !pid.to_str()?.bytes().all(|b| b.is_ascii_digit()) {
+        let pid = pid.to_str()?;
+        if pid == own || !pid.bytes().all(|b| b.is_ascii_digit()) {
             return None;
         }
         let cmdline = fs::read(entry.path().join("cmdline")).ok()?;
@@ -162,6 +167,20 @@ mod tests {
              /nix/store/y-python3.13-fw-fanctrl-1.0.4/bin/.fw-fanctrl-wrapped\0\
              --output-format\0JSON\0print\0all\0",
         );
+        assert_eq!(other_controller(&sys.paths().proc), None);
+    }
+
+    #[test]
+    fn the_fan_helper_gives_way_to_the_fan_daemon() {
+        let sys = FakeSys::new();
+        sys.write("proc/812/cmdline", "/usr/bin/thermite-fand\0brad\0");
+        assert_eq!(other_controller(&sys.paths().proc).as_deref(), Some("thermite-fand"));
+    }
+
+    #[test]
+    fn the_fan_daemon_does_not_find_itself() {
+        let sys = FakeSys::new();
+        sys.write(&format!("proc/{}/cmdline", std::process::id()), "/usr/bin/thermite-fand\0brad\0");
         assert_eq!(other_controller(&sys.paths().proc), None);
     }
 

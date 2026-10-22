@@ -1,5 +1,5 @@
-//! Hardware access that the window and the fan helper share: sensors, their thresholds,
-//! fans, fan control, fan curves and the saved settings.
+//! Hardware access that the window, the fan helper and the fan daemon share: sensors,
+//! their thresholds, fans, fan control, fan curves and the saved settings.
 //!
 //! It has no Tauri and no NVML code, so a process that runs as root needs neither.
 
@@ -7,6 +7,7 @@ use std::time::Duration;
 
 pub mod control;
 pub mod curve;
+pub mod daemon;
 pub mod fans;
 pub mod helper;
 pub mod sensors;

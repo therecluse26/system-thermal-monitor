@@ -49,10 +49,13 @@ impl Default for Settings {
 impl Settings {
     /// Missing or unreadable settings fall back to the defaults; the app must still start.
     pub fn load(path: &Path) -> Self {
-        fs::read_to_string(path)
-            .ok()
-            .and_then(|text| serde_json::from_str(&text).ok())
-            .unwrap_or_default()
+        Self::read(path).unwrap_or_default()
+    }
+
+    /// The settings at `path`, or why they cannot be read.
+    pub fn read(path: &Path) -> Result<Self, String> {
+        let text = fs::read_to_string(path).map_err(|e| format!("cannot read {}: {e}", path.display()))?;
+        serde_json::from_str(&text).map_err(|e| format!("cannot parse {}: {e}", path.display()))
     }
 
     /// Reads `path`, or the settings saved under the app's old name while `path` does

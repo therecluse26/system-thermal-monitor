@@ -8,7 +8,7 @@ use std::collections::{BTreeMap, HashMap};
 use std::io::{self, BufRead, BufReader, Write};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc::{self, RecvTimeoutError};
+use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
 use std::thread;
 use std::time::Instant;
 
@@ -241,7 +241,7 @@ impl Controller {
 /// new status to `output` as one JSON line. Returns when `input` ends or `stop` is set.
 /// The controller is then dropped, which gives every fan back to its automatic mode.
 pub fn serve(
-    mut controller: Controller,
+    controller: Controller,
     input: impl BufRead + Send + 'static,
     mut output: impl Write,
     stop: &AtomicBool,
@@ -260,22 +260,37 @@ pub fn serve(
             }
         }
     });
+    let report = |status: &Status| {
+        let line = serde_json::to_string(status).expect("status is plain data");
+        writeln!(output, "{line}")?;
+        output.flush()
+    };
+    run(controller, &received, report, stop);
+}
 
+/// Sets each plan that arrives on `plans`, ticks once per `INTERVAL`, and gives each new
+/// status to `report`. Returns when `plans` disconnects, `report` fails or `stop` is set.
+/// The controller is then dropped, which gives every fan back to its automatic mode.
+pub fn run(
+    mut controller: Controller,
+    plans: &Receiver<Plan>,
+    mut report: impl FnMut(&Status) -> io::Result<()>,
+    stop: &AtomicBool,
+) {
     // Before the first plan there is nothing to report.
     let mut last = Some(Status::default());
     let mut next = Instant::now();
     while !stop.load(Ordering::Relaxed) {
-        match received.recv_timeout(next.saturating_duration_since(Instant::now())) {
+        match plans.recv_timeout(next.saturating_duration_since(Instant::now())) {
             Ok(plan) => controller.set_plan(plan),
             Err(RecvTimeoutError::Timeout) => {}
-            // The window closed the pipe, or died.
+            // The window closed the pipe or died, or the daemon's settings reader died.
             Err(RecvTimeoutError::Disconnected) => break,
         }
         let status = controller.tick();
         next = Instant::now() + INTERVAL;
         if last.as_ref() != Some(&status) {
-            let line = serde_json::to_string(&status).expect("status is plain data");
-            if writeln!(output, "{line}").and_then(|()| output.flush()).is_err() {
+            if report(&status).is_err() {
                 break;
             }
             last = Some(status);
@@ -283,23 +298,53 @@ pub fn serve(
     }
 }
 
+/// The parts of a status worth a log line: a fan taken or lost, a failsafe, an error,
+/// or another fan controller. Duty changes are not.
+type LogKey = (Option<String>, Vec<(String, bool, bool, Option<String>)>);
+
+/// Remembers the last status that was worth a log line.
+#[derive(Default)]
+pub struct StatusLog(Option<LogKey>);
+
+impl StatusLog {
+    /// True when `status` differs from the last one in a part worth a log line.
+    pub fn worth_a_line(&mut self, status: &Status) -> bool {
+        let fans = status
+            .fans
+            .iter()
+            .map(|f| (f.fan.clone(), f.duty.is_some(), f.failsafe, f.error.clone()))
+            .collect();
+        let key = Some((status.blocked_by.clone(), fans));
+        if key == self.0 {
+            return false;
+        }
+        self.0 = key;
+        true
+    }
+}
+
 /// The command-line flag that makes the binary run as the fan helper.
 pub const HELPER_FLAG: &str = "--fan-helper";
 
-/// Entry point of the fan helper, which the window starts as root through pkexec.
-pub fn main() {
+/// A flag that `SIGTERM`, `SIGINT` and `SIGHUP` set. Logout, shutdown, `systemctl stop`
+/// and Ctrl+C in a terminal then end `run`, so the fans go back to automatic mode first.
+pub fn stop_on_signals() -> &'static AtomicBool {
     static STOP: AtomicBool = AtomicBool::new(false);
     extern "C" fn on_signal(_: libc::c_int) {
         STOP.store(true, Ordering::Relaxed);
     }
-    // Logout, shutdown and Ctrl+C in a terminal end the helper through `serve`,
-    // so the fans go back to automatic mode first.
     for signal in [libc::SIGTERM, libc::SIGINT, libc::SIGHUP] {
         // SAFETY: the handler only stores to an atomic, which is async-signal-safe.
         unsafe { libc::signal(signal, on_signal as *const () as libc::sighandler_t) };
     }
+    &STOP
+}
+
+/// Entry point of the fan helper, which the window starts as root through pkexec.
+pub fn main() {
+    let stop = stop_on_signals();
     let input = BufReader::new(io::stdin());
-    serve(Controller::new(SysPaths::default()), input, io::stdout(), &STOP);
+    serve(Controller::new(SysPaths::default()), input, io::stdout(), stop);
 }
 
 #[cfg(test)]

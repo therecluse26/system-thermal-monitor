@@ -17,7 +17,7 @@ use std::thread;
 use serde::Serialize;
 
 use thermite_core::control;
-use thermite_core::helper::{Plan, Status, HELPER_FLAG};
+use thermite_core::helper::{Plan, Status, StatusLog, HELPER_FLAG};
 
 /// What the UI shows about fan control.
 #[derive(Debug, Clone, PartialEq, Default, Serialize)]
@@ -201,12 +201,14 @@ fn watch(mut child: Child, generation: u64, shared: &Mutex<Shared>, on_change: &
         }
         first
     });
-    let mut logged = None;
+    let mut log = StatusLog::default();
     for line in BufReader::new(stdout).lines().map_while(Result::ok) {
         let Ok(status) = serde_json::from_str::<Status>(&line) else {
             continue;
         };
-        log_status(&line, &status, &mut logged);
+        if log.worth_a_line(&status) {
+            eprintln!("thermite: fan helper: {line}");
+        }
         let mut shared = shared.lock().unwrap();
         if shared.generation == generation {
             let notice = status.blocked_by.as_ref().map(|other| format!("{other} controls the fans"));
@@ -230,23 +232,6 @@ fn watch(mut child: Child, generation: u64, shared: &Mutex<Shared>, on_change: &
     };
     eprintln!("thermite: fan curves are off: {reason}");
     update(&mut shared, notice(reason), on_change);
-}
-
-/// The parts of a status worth a log line: a fan taken or lost, a failsafe, an error,
-/// or another fan controller. Duty changes are not.
-type LogKey = (Option<String>, Vec<(String, bool, bool, Option<String>)>);
-
-fn log_status(line: &str, status: &Status, logged: &mut Option<LogKey>) {
-    let fans = status
-        .fans
-        .iter()
-        .map(|f| (f.fan.clone(), f.duty.is_some(), f.failsafe, f.error.clone()))
-        .collect();
-    let key = Some((status.blocked_by.clone(), fans));
-    if key != *logged {
-        eprintln!("thermite: fan helper: {line}");
-        *logged = key;
-    }
 }
 
 #[cfg(test)]

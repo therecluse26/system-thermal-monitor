@@ -165,7 +165,7 @@ Only root can set fan speeds, so the app splits the work:
 - If `pkexec` fails, the fan control shows its message, for example "pkexec must be setuid root".
 - The fan helper runs the curves once per second. The window sends it changes through a pipe.
 - When the app closes or crashes, the pipe closes. The helper then gives every fan back to its automatic mode.
-- So curves run only while the app runs.
+- So curves run only while the app runs, unless the fan daemon runs them (see below).
 - Without curves, the app shows no password dialog and needs no root.
 
 Safety rules:
@@ -175,7 +175,7 @@ Safety rules:
 - The duty rises at once. It falls only after the temperature drops 3 °C, so the fan does not hunt.
 - A curve that starts at 0% stops the fan below its first point. Never do this for a pump.
 - The helper sets no fan while another fan controller runs: `fw-fanctrl run`, `fancontrol`, `thinkfan`,
-  `coolercontrold`, `fan2go` or `nbfc_service`. It checks every 30 seconds.
+  `coolercontrold`, `fan2go`, `nbfc_service`, or Thermite's own fan daemon `thermite-fand`. It checks every 30 seconds.
   Client commands such as `fw-fanctrl print`, which `fw-fanctrl-gui` runs, do not count.
 - If the helper gets `SIGKILL`, the fans stay at their last duty. Only root or the out-of-memory killer can do that.
 
@@ -212,6 +212,27 @@ The driver must have both `pwmN` and `pwmN_enable`.
 - Between two points the duty follows a straight line. Outside the points, the nearest point's duty applies.
 - `cargo test real_fans` and `cargo test real_sensors` (with `-- --ignored --nocapture`) print the ids.
 - From an AppImage, the helper runs the AppImage file (`$APPIMAGE`). Root cannot read the user's AppImage mount.
+
+### Fan daemon
+
+`thermite-fand` runs the fan settings of one user from boot, without the window and without a password dialog.
+The packages do not include it yet. To try it, build it and start it as root:
+
+```sh
+cd src-tauri
+cargo build --release -p thermite-core --bin thermite-fand
+sudo target/release/thermite-fand "$USER"      # Ctrl+C gives every fan back
+```
+
+- It reads that user's `~/.config/local.thermite/settings.json` once per second.
+  So a setting that you apply in the window reaches the fans within a second.
+- It does not follow `XDG_CONFIG_HOME`.
+- When it cannot read the settings, every fan goes back to its automatic mode. Its log says why.
+- It looks for new sensors every 30 seconds. A sensor that appears late at boot joins the plan then.
+- The safety rules above apply to it too. It also sets no fan while another fan controller runs.
+- It writes each new status to `/run/thermite/status.json`, and deletes the file when it stops.
+- Closing the window does not stop it. `SIGTERM`, `SIGINT` and `SIGHUP` stop it, and it gives every fan back first.
+- While it runs, the window's fan helper gives way to it. For now the window says "thermite-fand controls the fans".
 
 ## How the thresholds are chosen
 
@@ -251,8 +272,8 @@ At start-up, the app moves settings saved under the ids of earlier versions to t
 
 The Rust code is a Cargo workspace in `src-tauri`, with two crates:
 
-- `thermite-core` (`src-tauri/core`): hardware access that the window and the fan helper share.
-  It has no Tauri and no NVML code.
+- `thermite-core` (`src-tauri/core`): hardware access that the window, the fan helper and the fan daemon share.
+  It has no Tauri and no NVML code. It also builds the fan daemon, `thermite-fand`.
 - `thermite` (`src-tauri/src`): the Tauri app.
 
 | Path | Contents |
@@ -262,6 +283,7 @@ The Rust code is a Cargo workspace in `src-tauri`, with two crates:
 | `src-tauri/core/src/control.rs` | Sets fan speeds through hwmon; driver exceptions; finds other fan controllers |
 | `src-tauri/core/src/curve.rs` | Fan curves: duty per temperature, hysteresis |
 | `src-tauri/core/src/helper.rs` | The root fan helper and the plan it runs |
+| `src-tauri/core/src/daemon.rs` | The fan daemon `thermite-fand`: follows the user's settings file, writes its status |
 | `src-tauri/core/src/thresholds.rs` | Default thresholds per sensor driver |
 | `src-tauri/core/src/settings.rs` | Saved overrides, hidden sensors, time window, fastest fan speeds, fan curves |
 | `src-tauri/src/link.rs` | The window's end of the pipe: starts the fan helper through `pkexec` |
