@@ -82,7 +82,9 @@ impl Nvidia {
                     label: format!("Fan {}", fan + 1),
                     rated_max: None,
                     share_kind: Some(ShareKind::Driver),
+                    controllable: false,
                     input: FanInput::Nvml { gpu: index, fan },
+                    control: None,
                 });
             }
         }

@@ -42,6 +42,8 @@ export interface Fan {
   ratedMax: number | null;
   /** What `FanReading.share` measures: PWM duty, or the driver's own share of maximum. */
   shareKind: "pwm" | "driver" | null;
+  /** Whether the app can set this fan's speed. */
+  controllable: boolean;
 }
 
 export interface FanReading {
@@ -79,10 +81,46 @@ export interface Override {
   throttle?: number | null;
 }
 
+export interface CurvePoint {
+  /** °C. */
+  temp: number;
+  /** PWM duty in percent. */
+  duty: number;
+}
+
+export interface FanCurve {
+  /** Id of the sensor whose temperature drives the fan. */
+  sensor: string;
+  points: CurvePoint[];
+}
+
+/** What happened to one fan in the fan helper's last tick. */
+export interface HelperFanStatus {
+  fan: string;
+  /** The duty set, in percent. null when the fan did not take it. */
+  duty: number | null;
+  /** Full speed, because the sensor reached its throttle point or stopped reading. */
+  failsafe: boolean;
+  /** Why the fan did not take the duty. */
+  error: string | null;
+}
+
+export interface ControlState {
+  /** Why the fans with curves do not follow them, in a few words. null while they do. */
+  notice: string | null;
+  status: {
+    /** Another fan controller that runs now. */
+    blockedBy: string | null;
+    fans: HelperFanStatus[];
+  };
+}
+
 export interface Settings {
   overrides: Record<string, Override>;
   hidden: string[];
   windowSecs: number;
   /** Fastest speed seen per fan id, in RPM. */
   fanPeaks: Record<string, number>;
+  /** Keyed by fan id. A fan without a curve stays in automatic mode. */
+  fanCurves: Record<string, FanCurve>;
 }

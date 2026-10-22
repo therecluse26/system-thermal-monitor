@@ -1,7 +1,10 @@
 // Prevents an extra console window on Windows in release builds.
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod control;
+mod curve;
 mod fans;
+mod helper;
 mod monitor;
 mod nvidia;
 mod sensors;
@@ -17,6 +20,7 @@ use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use tauri::{AppHandle, Emitter, Manager, State};
 
+use helper::{ControlState, Link, Plan};
 use monitor::{Monitor, Snapshot, INTERVAL};
 use sensors::SysPaths;
 use settings::Settings;
@@ -25,6 +29,14 @@ struct AppState {
     monitor: Mutex<Monitor>,
     settings: Mutex<Settings>,
     settings_path: PathBuf,
+    fan_helper: Mutex<Link>,
+}
+
+/// Sends the saved fan curves to the fan helper when they changed.
+/// `retry` starts the helper again for unchanged curves, as `Link::apply` says.
+fn sync_fan_curves(state: &AppState, retry: bool) {
+    let plan = Plan::new(&state.settings.lock().unwrap(), state.monitor.lock().unwrap().sensors());
+    state.fan_helper.lock().unwrap().apply(plan, &SysPaths::default().proc, retry);
 }
 
 #[tauri::command]
@@ -43,7 +55,19 @@ fn save_settings(state: State<'_, AppState>, settings: Settings) -> Result<(), S
         .save(&state.settings_path)
         .map_err(|e| format!("Could not save {}: {e}", state.settings_path.display()))?;
     *state.settings.lock().unwrap() = settings;
+    sync_fan_curves(&state, false);
     Ok(())
+}
+
+#[tauri::command]
+fn fan_control(state: State<'_, AppState>) -> ControlState {
+    state.fan_helper.lock().unwrap().state()
+}
+
+/// Starts the fan helper again after a cancelled password dialog or a block.
+#[tauri::command]
+fn retry_fan_control(state: State<'_, AppState>) {
+    sync_fan_curves(&state, true);
 }
 
 fn unix_ms() -> u64 {
@@ -81,6 +105,10 @@ fn spawn_sampler(app: AppHandle) {
 }
 
 fn main() {
+    if std::env::args().nth(1).as_deref() == Some(helper::HELPER_FLAG) {
+        helper::main();
+        return;
+    }
     tauri::Builder::default()
         .setup(|app| {
             let settings_path = app.path().app_config_dir()?.join("settings.json");
@@ -91,6 +119,7 @@ fn main() {
                 monitor.fan_count(),
                 settings_path.display()
             );
+            let handle = app.handle().clone();
             let mut settings = Settings::load(&settings_path);
             if settings.migrate(&monitor.aliases()) {
                 if let Err(e) = settings.save(&settings_path) {
@@ -101,11 +130,22 @@ fn main() {
                 monitor: Mutex::new(monitor),
                 settings: Mutex::new(settings),
                 settings_path,
+                fan_helper: Mutex::new(Link::new(move |control| {
+                    // Fails only while the window is closing; nothing to do about it.
+                    let _ = handle.emit("fan-control", control);
+                })),
             });
+            sync_fan_curves(&app.state::<AppState>(), false);
             spawn_sampler(app.handle().clone());
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![snapshot, get_settings, save_settings])
+        .invoke_handler(tauri::generate_handler![
+            snapshot,
+            get_settings,
+            save_settings,
+            fan_control,
+            retry_fan_control
+        ])
         .run(tauri::generate_context!())
         .expect("error while running Thermal Monitor");
 }

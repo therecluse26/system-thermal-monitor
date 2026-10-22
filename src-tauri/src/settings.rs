@@ -1,5 +1,5 @@
 //! User choices that survive a restart: custom thresholds, hidden sensors, time window,
-//! and the fastest speed seen for each fan.
+//! the fastest speed seen for each fan, and fan curves.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
@@ -7,6 +7,8 @@ use std::io;
 use std::path::Path;
 
 use serde::{Deserialize, Serialize};
+
+use crate::curve::FanCurve;
 
 /// A custom threshold. A `None` field keeps the default for that threshold.
 #[derive(Debug, Default, Clone, PartialEq, Serialize, Deserialize)]
@@ -28,6 +30,8 @@ pub struct Settings {
     /// Fastest speed seen per fan id, in RPM. The UI uses it as the fan's maximum
     /// when the hardware reports no rated maximum and no PWM duty.
     pub fan_peaks: BTreeMap<String, u32>,
+    /// Keyed by fan id. A fan without a curve stays in automatic mode.
+    pub fan_curves: BTreeMap<String, FanCurve>,
 }
 
 impl Default for Settings {
@@ -37,6 +41,7 @@ impl Default for Settings {
             hidden: BTreeSet::new(),
             window_secs: 300,
             fan_peaks: BTreeMap::new(),
+            fan_curves: BTreeMap::new(),
         }
     }
 }
@@ -68,6 +73,14 @@ impl Settings {
                 *kept = (*kept).max(peak);
                 changed = true;
             }
+            if let Some(curve) = self.fan_curves.remove(old) {
+                self.fan_curves.entry(new.clone()).or_insert(curve);
+                changed = true;
+            }
+            for curve in self.fan_curves.values_mut().filter(|c| c.sensor == *old) {
+                curve.sensor = new.clone();
+                changed = true;
+            }
         }
         changed
     }
@@ -86,6 +99,7 @@ impl Settings {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::curve::CurvePoint;
 
     #[test]
     fn round_trips_and_tolerates_missing_fields() {
@@ -122,5 +136,22 @@ mod tests {
         let partial = Settings::load(&path);
         assert_eq!(partial.window_secs, 60);
         assert!(partial.overrides.is_empty());
+    }
+
+    #[test]
+    fn fan_curves_move_with_fan_and_sensor_ids() {
+        let mut s = Settings::default();
+        let curve = FanCurve {
+            sensor: "k10temp/old/temp1".into(),
+            points: vec![CurvePoint { temp: 50.0, duty: 0.0 }],
+        };
+        s.fan_curves.insert("cros_ec/cros-ec-hwmon.6.auto/fan1".into(), curve);
+        let aliases = [
+            ("cros_ec/cros-ec-hwmon.6.auto/fan1".to_string(), "cros_ec/cros-ec-hwmon/fan1".to_string()),
+            ("k10temp/old/temp1".to_string(), "k10temp/new/temp1".to_string()),
+        ];
+        assert!(s.migrate(&aliases));
+        let moved: Vec<(&str, &str)> = s.fan_curves.iter().map(|(fan, c)| (fan.as_str(), c.sensor.as_str())).collect();
+        assert_eq!(moved, [("cros_ec/cros-ec-hwmon/fan1", "k10temp/new/temp1")]);
     }
 }

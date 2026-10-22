@@ -2,10 +2,10 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 
 import { chartMode, drawChart, readTheme, seriesColor, type ChartMode, type ChartTheme, type HoverPoint } from "./chart";
-import { buildFanView, fanName, renderFan, spinning, type FanView } from "./fans";
+import { buildFanView, fanName, fixedLevel, renderFan, spinning, type FanView } from "./fans";
 import { fmtAgo, fmtClock, fmtLimit, fmtTemp, setStatus, statusOf, type Status } from "./format";
 import { buildLoadView, renderLoad, type LoadInput, type LoadView } from "./load";
-import type { Category, FanReading, Override, Sample, Sensor, Settings, Snapshot } from "./types";
+import type { Category, ControlState, Fan, FanReading, Override, Sample, Sensor, Settings, Snapshot } from "./types";
 import "./styles.css";
 
 const WINDOWS = [
@@ -59,7 +59,10 @@ const $ = <T extends HTMLElement>(selector: string, root: ParentNode = document)
 
 let theme: ChartTheme;
 let snap: Snapshot | null = null;
-let settings: Settings = { overrides: {}, hidden: [], windowSecs: 300, fanPeaks: {} };
+let settings: Settings = { overrides: {}, hidden: [], windowSecs: 300, fanPeaks: {}, fanCurves: {} };
+let fanControl: ControlState = { notice: null, status: { blockedBy: null, fans: [] } };
+/** Refreshes the open fan control dialog when the control state changes. */
+let fanDialogUpdate: (() => void) | null = null;
 let views: View[] = [];
 let fanViews: FanView[] = [];
 let loadView: LoadView | null = null;
@@ -79,12 +82,14 @@ async function load(): Promise<void> {
   if (loading) return;
   loading = true;
   try {
-    const [next, saved] = await Promise.all([
+    const [next, saved, control] = await Promise.all([
       invoke<Snapshot>("snapshot"),
       invoke<Settings>("get_settings"),
+      invoke<ControlState>("fan_control"),
     ]);
     snap = next;
     settings = saved;
+    fanControl = control;
     notePeaks(next.fanReadings);
     const queued = pending;
     pending = [];
@@ -257,7 +262,9 @@ function buildGauges(): void {
   if (!snap) return;
   const gauges = $("#gauges");
   loadView = snap.sensors.length > 0 ? buildLoadView() : null;
-  fanViews = snap.fans.flatMap((fan, i) => (fanShown(i) ? [buildFanView(fan, () => hideIds([fan.id]))] : []));
+  fanViews = snap.fans.flatMap((fan, i) =>
+    fanShown(i) ? [buildFanView(fan, () => hideIds([fan.id]), () => openFanControl(fan))] : [],
+  );
   shownFans = shownFanKey();
   gauges.replaceChildren(...(loadView ? [loadView.card] : []), ...fanViews.map((v) => v.card));
   gauges.hidden = gauges.childElementCount === 0;
@@ -411,7 +418,12 @@ function render(): void {
   }
   for (const view of fanViews) {
     const i = snap.fans.indexOf(view.fan);
-    renderFan(view, snap.fanReadings[i] ?? null, settings.fanPeaks[view.fan.id]);
+    const id = view.fan.id;
+    renderFan(view, snap.fanReadings[i] ?? null, settings.fanPeaks[id], {
+      curve: settings.fanCurves[id],
+      status: fanControl.status.fans.find((f) => f.fan === id),
+      notice: fanControl.notice,
+    });
   }
   renderSummary(counts);
 }
@@ -602,6 +614,77 @@ function openEditor(view: View): void {
   safeInput.focus();
 }
 
+/** Automatic mode, or a fixed level. A fixed level is saved as a curve with one point.
+ *  A curve with more points, written in settings.json, shows as a third mode. */
+function openFanControl(fan: Fan): void {
+  if (!snap) return;
+  const sensors = snap.sensors;
+  const dialog = $<HTMLDialogElement>("#fan-control");
+  const form = $<HTMLFormElement>("form", dialog);
+  const saved = settings.fanCurves[fan.id];
+  const level = fixedLevel(saved);
+  const curve = saved && level == null ? saved : null;
+
+  $("#fan-control-title").textContent = fanName(fan);
+  $("#fan-control-detail").textContent = `${fan.chip} · ${fan.id}`;
+  $("#fan-control-curve").hidden = !curve;
+  $("#fan-control-points").textContent = curve
+    ? `· ${curve.points.map((p) => `${fmtLimit(p.temp)}: ${p.duty}%`).join(", ")}`
+    : "";
+
+  const modes = form.elements.namedItem("mode") as RadioNodeList;
+  modes.value = !saved ? "auto" : curve ? "curve" : "fixed";
+  const levelInput = $<HTMLInputElement>("[name=level]", form);
+  levelInput.value = String(level ?? 50);
+  const sensorSelect = $<HTMLSelectElement>("[name=sensor]", form);
+  sensorSelect.replaceChildren(
+    ...sensors.map((s) => {
+      const option = el("option", "", sensorName(s));
+      option.value = s.id;
+      return option;
+    }),
+  );
+  sensorSelect.value = saved?.sensor ?? "";
+  if (!sensorSelect.value) sensorSelect.value = (sensors.find((s) => s.category === "cpu") ?? sensors[0])?.id ?? "";
+
+  const update = () => {
+    const mode = modes.value;
+    $("#fan-control-level").hidden = mode !== "fixed";
+    $("#fan-control-level-value").textContent = `${levelInput.value}%`;
+    $("#fan-control-zero").hidden = mode !== "fixed" || Number(levelInput.value) !== 0;
+    $("#fan-control-failsafe").hidden = mode === "auto";
+    const sensor = sensors.find((s) => s.id === sensorSelect.value);
+    $("#fan-control-failsafe-text").textContent = sensor
+      ? `At ${fmtLimit(limitsOf(sensor).throttle)} ("Throttling likely at"), or when the sensor stops reading, ` +
+        "the fan runs at full speed."
+      : "";
+    const notice = $("#fan-control-notice");
+    notice.textContent = fanControl.notice ? `Fan control does not apply now: ${fanControl.notice}.` : "";
+    notice.hidden = !fanControl.notice;
+  };
+  form.oninput = update;
+  update();
+  fanDialogUpdate = update;
+  dialog.onclose = () => (fanDialogUpdate = null);
+
+  form.onsubmit = (event) => {
+    const action = (event.submitter as HTMLButtonElement | null)?.value ?? "apply";
+    if (action !== "apply") return;
+    const mode = modes.value;
+    if (mode === "auto") {
+      delete settings.fanCurves[fan.id];
+    } else if (mode === "fixed") {
+      settings.fanCurves[fan.id] = { sensor: sensorSelect.value, points: [{ temp: 0, duty: Number(levelInput.value) }] };
+    } else if (curve) {
+      settings.fanCurves[fan.id] = { ...curve, sensor: sensorSelect.value };
+    }
+    // Retry after a cancelled password dialog, even when the curves did not change.
+    void saveSettings().then(() => invoke("retry_fan_control"));
+    queueRender();
+  };
+  dialog.showModal();
+}
+
 function openHidden(): void {
   if (!snap) return;
   const dialog = $<HTMLDialogElement>("#hidden");
@@ -675,6 +758,11 @@ async function start(): Promise<void> {
   }, PEAK_SAVE_MS);
   // Listen first, so no sample is lost between the snapshot and the subscription.
   await listen<Sample>("sample", (event) => onSample(event.payload));
+  await listen<ControlState>("fan-control", (event) => {
+    fanControl = event.payload;
+    fanDialogUpdate?.();
+    queueRender();
+  });
   await load();
 }
 

@@ -50,7 +50,7 @@ The commit messages since the last release tag decide the new version:
 
 ## Where the data comes from
 
-The app reads `/sys/class/hwmon` once per second. It needs no root access.
+The app reads `/sys/class/hwmon` once per second. It needs no root access, except for fan control.
 NVIDIA GPUs on the proprietary driver come from NVML instead (see below).
 It keeps 30 minutes of history in memory. The time-window buttons choose 1, 5, 10 or 30 minutes.
 Every 30 seconds it looks for new sensors and fans, for example a dGPU that woke up.
@@ -117,6 +117,75 @@ It loads `libnvidia-ml.so.1` at run time, so machines without the NVIDIA driver 
 
 This support is not tested on real NVIDIA hardware yet.
 
+## Fan control
+
+A **fan curve** sets the PWM duty of one fan from the temperature of one sensor.
+Fan control has no compatibility guarantees. It is tested only on a Framework Laptop 16.
+
+A fan card whose speed the app can set has a mode line under the speed. It shows:
+
+- **Automatic**: the firmware sets the speed.
+- **Fixed 40%**, or **Curve · 58%**: the duty this app set in the last second.
+- **Full speed: failsafe**: see the safety rules below.
+- Otherwise, why the setting does not apply now, for example "Waiting for your password".
+
+Click the mode line to choose Automatic or a fixed level from 0% to 100%.
+A fixed level is saved as a curve with one point.
+There is no editor for curves with more points yet. They go in `settings.json` (see the example below).
+
+Only root can set fan speeds, so the app splits the work:
+
+- When there are saved curves, the app starts a small **fan helper** as root through `pkexec`.
+  After a cancelled password dialog, Apply in the fan control asks again.
+- Your desktop shows its own password dialog. The app never sees the password.
+- The fan helper runs the curves once per second. The window sends it changes through a pipe.
+- When the app closes or crashes, the pipe closes. The helper then gives every fan back to its automatic mode.
+- So curves run only while the app runs.
+- Without curves, the app shows no password dialog and needs no root.
+
+Safety rules:
+
+- At or above the sensor's "Throttling likely at" temperature, the fan runs at full speed. A custom value applies.
+- When the sensor stops reading, the fan runs at full speed.
+- The duty rises at once. It falls only after the temperature drops 3 °C, so the fan does not hunt.
+- A curve that starts at 0% stops the fan below its first point. Never do this for a pump.
+- The helper sets no fan while another fan controller runs: `fw-fanctrl`, `fancontrol`, `thinkfan`,
+  `coolercontrold`, `fan2go` or `nbfc_service`. It checks every 30 seconds.
+- If the helper gets `SIGKILL`, the fans stay at their last duty. Only root or the out-of-memory killer can do that.
+
+### Which fans the app can control
+
+The driver must have both `pwmN` and `pwmN_enable`.
+`cargo test real_fans -- --ignored --nocapture` shows `"controllable"` for each fan.
+
+- Drivers that follow the hwmon ABI: the helper writes `1` to `pwmN_enable`, then the duty to `pwmN`.
+  When it lets go, it writes back the mode it found.
+- `framework_laptop`: any write to `pwmN_enable` gives control back to the EC.
+  So the helper writes only `pwmN`, from 0 to 100. When it lets go, it writes `2` to `pwmN_enable`.
+- On a Framework, `cros_ec` reports the fans and `framework_laptop` owns the PWM files.
+  The fan cards keep the `cros_ec` fans; their control comes from `framework_laptop`.
+- NVIDIA fans cannot be controlled yet.
+
+### Example curve
+
+```json
+"fanCurves": {
+  "cros_ec/cros-ec-hwmon/fan1": {
+    "sensor": "k10temp/0000:00:18.3/temp1",
+    "points": [
+      { "temp": 45, "duty": 20 },
+      { "temp": 60, "duty": 35 },
+      { "temp": 85, "duty": 100 }
+    ]
+  }
+}
+```
+
+- Close the app before you edit `settings.json`. The app writes its own copy back when it saves.
+- Between two points the duty follows a straight line. Outside the points, the nearest point's duty applies.
+- `cargo test real_fans` and `cargo test real_sensors` (with `-- --ignored --nocapture`) print the ids.
+- From an AppImage, the helper runs the AppImage file (`$APPIMAGE`). Root cannot read the user's AppImage mount.
+
 ## How the thresholds are chosen
 
 The device's own limit wins when it reports a believable one (30–150 °C).
@@ -156,11 +225,14 @@ At start-up, the app moves settings saved under the ids of earlier versions to t
 |---|---|
 | `src-tauri/src/sensors.rs` | Finds hwmon sensors, names them, reads them |
 | `src-tauri/src/fans.rs` | Finds and reads fans, drops duplicate drivers |
+| `src-tauri/src/control.rs` | Sets fan speeds through hwmon; driver exceptions; finds other fan controllers |
+| `src-tauri/src/curve.rs` | Fan curves: duty per temperature, hysteresis |
+| `src-tauri/src/helper.rs` | The root fan helper, the plan it runs, and the window's end of the pipe |
 | `src-tauri/src/nvidia.rs` | NVIDIA GPU temperatures and fans through NVML |
 | `src-tauri/src/thresholds.rs` | Default thresholds per sensor driver |
 | `src-tauri/src/monitor.rs` | 1 Hz sampler and the 30-minute history |
-| `src-tauri/src/settings.rs` | Saved overrides, hidden sensors, time window, fastest fan speeds |
-| `src-tauri/src/main.rs` | Tauri commands (`snapshot`, `get_settings`, `save_settings`) and the `sample` event |
+| `src-tauri/src/settings.rs` | Saved overrides, hidden sensors, time window, fastest fan speeds, fan curves |
+| `src-tauri/src/main.rs` | Tauri commands (`snapshot`, `get_settings`, `save_settings`), the `sample` event, `--fan-helper` |
 | `src/chart.ts` | Canvas chart: area, lines or band; grid, threshold lines, hover crosshair |
 | `src/main.ts` | Groups sensors into chart cards; threshold editor, hidden list, summary bar |
 | `src/gauge.ts` | Ring gauge card shared by the top cards |

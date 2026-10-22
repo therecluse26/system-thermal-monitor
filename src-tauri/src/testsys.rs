@@ -18,6 +18,7 @@ impl FakeSys {
         };
         fake.write("class/hwmon/.keep", "");
         fake.write("class/thermal/.keep", "");
+        fake.write("proc/.keep", "");
         fake.write("cpuinfo", "processor\t: 0\nmodel name\t: Test CPU 9000\n");
         fake
     }
@@ -32,6 +33,11 @@ impl FakeSys {
         fs::write(p, content).unwrap();
     }
 
+    /// What the app last wrote to a file, without the trailing newline.
+    pub fn read(&self, rel: &str) -> String {
+        fs::read_to_string(self.path(rel)).unwrap().trim_end().to_string()
+    }
+
     pub fn link_device(&self, hwmon: &str, device_rel: &str) {
         fs::create_dir_all(self.path(device_rel)).unwrap();
         symlink(self.path(device_rel), self.path(&format!("class/hwmon/{hwmon}/device"))).unwrap();
@@ -42,6 +48,7 @@ impl FakeSys {
             hwmon: self.path("class/hwmon"),
             thermal: self.path("class/thermal"),
             cpuinfo: self.path("cpuinfo"),
+            proc: self.path("proc"),
         }
     }
 }

@@ -1,15 +1,18 @@
 //! Finds and reads fan speeds that the kernel exposes through hwmon.
 //! NVIDIA GPU fans come from `nvidia.rs` instead, as the same `Fan` type.
 
+use std::ffi::OsStr;
 use std::fs;
 use std::path::{Path, PathBuf};
 
 use serde::Serialize;
 
+use crate::control::{self, FanControl};
 use crate::sensors::{device_key, id_chip, legacy_device_key, make_unique, numbered, read_trimmed, SysPaths};
 
 /// Drivers that report the same physical fans as another driver: (duplicate, preferred).
 /// The duplicate's fans are skipped when the preferred driver has fans.
+/// When the duplicate owns the PWM files, the preferred fan of the same number gets them.
 const DUPLICATE_SOURCES: &[(&str, &str)] = &[("framework_laptop", "cros_ec")];
 
 /// A reading above this is a glitch, not a fan.
@@ -55,8 +58,13 @@ pub struct Fan {
     pub rated_max: Option<u32>,
     /// What `FanReading::share` measures, when this fan reports one.
     pub share_kind: Option<ShareKind>,
+    /// Whether the app can set this fan's speed.
+    pub controllable: bool,
     #[serde(skip)]
     pub input: FanInput,
+    /// How to set the fan's speed, when the driver allows it.
+    #[serde(skip)]
+    pub control: Option<FanControl>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Serialize)]
@@ -105,6 +113,14 @@ pub fn read_hwmon(input: &FanInput) -> Option<FanReading> {
     })
 }
 
+/// "fan1_input": two drivers that report the same fans give one fan the same name.
+fn input_name(fan: &Fan) -> Option<&OsStr> {
+    match &fan.input {
+        FanInput::Hwmon { input, .. } => input.file_name(),
+        FanInput::Nvml { .. } => None,
+    }
+}
+
 /// Finds every hwmon fan whose speed can be read right now.
 pub fn discover(paths: &SysPaths) -> Vec<Fan> {
     let mut fans = Vec::new();
@@ -120,13 +136,9 @@ pub fn discover(paths: &SysPaths) -> Vec<Fan> {
                 continue;
             }
             let pwm_path = dir.join(format!("pwm{n}"));
-            let pwm = read_trimmed(&pwm_path).and_then(|v| v.parse::<f64>().ok()).map(|_| {
-                let full = read_trimmed(&dir.join(format!("pwm{n}_max")))
-                    .and_then(|v| v.parse::<f64>().ok())
-                    .filter(|m| *m > 0.0)
-                    .unwrap_or(255.0);
-                (pwm_path, full)
-            });
+            let pwm = read_trimmed(&pwm_path)
+                .and_then(|v| v.parse::<f64>().ok())
+                .map(|_| (pwm_path, control::pwm_full(&dir, n)));
             fans.push(Fan {
                 id: format!(
                     "{}/{}/fan{n}",
@@ -142,22 +154,37 @@ pub fn discover(paths: &SysPaths) -> Vec<Fan> {
                     .unwrap_or_else(|| format!("Fan {n}")),
                 rated_max: read_rpm(&dir.join(format!("fan{n}_max"))).filter(|m| *m > 0),
                 share_kind: pwm.is_some().then_some(ShareKind::Pwm),
+                controllable: false,
                 chip: chip.clone(),
                 input: FanInput::Hwmon {
                     input,
                     target: dir.join(format!("fan{n}_target")),
                     pwm,
                 },
+                control: FanControl::hwmon(&dir, &chip, n),
             });
         }
     }
 
     let chips: Vec<String> = fans.iter().map(|f| f.chip.clone()).collect();
-    fans.retain(|f| {
-        !DUPLICATE_SOURCES
+    let (duplicates, mut fans): (Vec<Fan>, Vec<Fan>) = fans.into_iter().partition(|f| {
+        DUPLICATE_SOURCES
             .iter()
             .any(|(dup, preferred)| f.chip == *dup && chips.iter().any(|c| c == preferred))
     });
+    for dup in duplicates {
+        let same_fan = fans.iter_mut().find(|f| {
+            DUPLICATE_SOURCES.iter().any(|(d, p)| *d == dup.chip && *p == f.chip)
+                && input_name(f).is_some()
+                && input_name(f) == input_name(&dup)
+        });
+        if let Some(fan) = same_fan {
+            fan.control = fan.control.take().or(dup.control);
+        }
+    }
+    for fan in &mut fans {
+        fan.controllable = fan.control.is_some();
+    }
     make_unique(&mut fans, |f| (&mut f.id, &f.legacy_id));
     fans
 }

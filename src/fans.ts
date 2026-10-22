@@ -1,7 +1,7 @@
 // Fan cards: a ring gauge for the share of maximum speed, with a rotor that spins faster as the fan does.
 
 import { buildGaugeCard, setRing, type GaugeCard } from "./gauge";
-import type { Fan, FanReading } from "./types";
+import type { Fan, FanCurve, FanReading, HelperFanStatus } from "./types";
 
 const ROTOR =
   '<svg viewBox="-16 -16 32 32" aria-hidden="true">' +
@@ -16,6 +16,54 @@ const HIDE_ICON =
 
 export interface FanView extends GaugeCard {
   fan: Fan;
+  /** The mode line, which opens the fan control. null when the app cannot set this fan's speed. */
+  control: HTMLButtonElement | null;
+}
+
+/** What the fan card needs to know about the control of its fan. */
+export interface ControlInfo {
+  /** The saved curve. One point means a fixed level. */
+  curve: FanCurve | undefined;
+  /** This fan in the fan helper's last status. */
+  status: HelperFanStatus | undefined;
+  /** Why curves do not apply now, from the window. */
+  notice: string | null;
+}
+
+/** One point means one duty at every temperature. */
+export function fixedLevel(curve: FanCurve | undefined): number | null {
+  return curve?.points.length === 1 ? curve.points[0].duty : null;
+}
+
+/** The mode line: what controls the fan now, and whether that works. */
+function controlLine(info: ControlInfo): { text: string; hint: string; state: "auto" | "on" | "off" | "failsafe" } {
+  const { curve, status, notice } = info;
+  if (!curve) {
+    return { text: "Automatic", hint: "The firmware sets the speed. Click to set it yourself.", state: "auto" };
+  }
+  const level = fixedLevel(curve);
+  const mode = level != null ? `Fixed ${Math.round(level)}%` : "Curve";
+  if (status?.failsafe) {
+    return {
+      text: "Full speed: failsafe",
+      hint: "The sensor reached its throttle point, or stopped reading. The fan runs at full speed.",
+      state: "failsafe",
+    };
+  }
+  if (status?.error) return { text: `${mode}: not applied`, hint: status.error, state: "off" };
+  if (status?.duty != null) {
+    // The duty the helper set, not the saved one: right after Apply they can differ for a moment.
+    const duty = Math.round(status.duty);
+    const text = level != null ? `Fixed ${duty}%` : `Curve · ${duty}%`;
+    return { text, hint: `This app sets the fan to ${duty}% PWM duty.`, state: "on" };
+  }
+  return {
+    text: notice ?? "Not applied",
+    hint: notice
+      ? `${mode} does not apply: ${notice}.`
+      : "The fan helper reports nothing for this fan. Its sensor may be missing.",
+    state: "off",
+  };
 }
 
 export function fmtRpm(rpm: number): string {
@@ -52,8 +100,17 @@ function share(fan: Fan, r: FanReading, peak: number | undefined) {
   return null;
 }
 
-export function buildFanView(fan: Fan, onHide: () => void): FanView {
-  const view: FanView = { fan, ...buildGaugeCard("fan", fanName(fan), ROTOR) };
+export function buildFanView(fan: Fan, onHide: () => void, onControl: () => void): FanView {
+  const view: FanView = { fan, control: null, ...buildGaugeCard("fan", fanName(fan), ROTOR) };
+  if (fan.controllable) {
+    const control = document.createElement("button");
+    control.type = "button";
+    control.className = "fan-control";
+    control.setAttribute("aria-label", `Set the speed of ${fanName(fan)}`);
+    control.addEventListener("click", onControl);
+    view.detail.after(control);
+    view.control = control;
+  }
   const hide = document.createElement("button");
   hide.type = "button";
   hide.className = "icon-button gauge-hide";
@@ -65,7 +122,13 @@ export function buildFanView(fan: Fan, onHide: () => void): FanView {
   return view;
 }
 
-export function renderFan(view: FanView, reading: FanReading | null, peak: number | undefined): void {
+export function renderFan(view: FanView, reading: FanReading | null, peak: number | undefined, control: ControlInfo): void {
+  if (view.control) {
+    const line = controlLine(control);
+    view.control.textContent = line.text;
+    view.control.title = line.hint;
+    view.control.dataset.state = line.state;
+  }
   const target = reading?.target ? `Target ${fmtRpm(reading.target)}.` : "";
   if (!reading) {
     view.value.textContent = "—";

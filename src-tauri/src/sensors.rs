@@ -15,6 +15,8 @@ pub struct SysPaths {
     pub hwmon: PathBuf,
     pub thermal: PathBuf,
     pub cpuinfo: PathBuf,
+    /// The process list, where other fan controllers show up.
+    pub proc: PathBuf,
 }
 
 impl Default for SysPaths {
@@ -23,6 +25,7 @@ impl Default for SysPaths {
             hwmon: "/sys/class/hwmon".into(),
             thermal: "/sys/class/thermal".into(),
             cpuinfo: "/proc/cpuinfo".into(),
+            proc: "/proc".into(),
         }
     }
 }

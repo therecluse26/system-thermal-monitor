@@ -161,6 +161,10 @@ impl Monitor {
         }
     }
 
+    pub fn sensors(&self) -> &[Sensor] {
+        &self.sensors
+    }
+
     pub fn sensor_count(&self) -> usize {
         self.sensors.len()
     }
