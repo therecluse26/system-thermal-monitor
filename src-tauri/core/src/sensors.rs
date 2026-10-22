@@ -1,5 +1,5 @@
 //! Finds and reads the temperature sensors that the kernel exposes through hwmon.
-//! NVIDIA GPUs come from `nvidia.rs` instead, as the same `Sensor` type.
+//! NVIDIA GPUs come from the app's `nvidia.rs` instead, as the same `Sensor` type.
 
 use std::collections::{HashMap, HashSet};
 use std::fs;

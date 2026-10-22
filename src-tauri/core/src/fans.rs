@@ -1,5 +1,5 @@
 //! Finds and reads fan speeds that the kernel exposes through hwmon.
-//! NVIDIA GPU fans come from `nvidia.rs` instead, as the same `Fan` type.
+//! NVIDIA GPU fans come from the app's `nvidia.rs` instead, as the same `Fan` type.
 
 use std::ffi::OsStr;
 use std::fs;

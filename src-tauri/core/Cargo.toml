@@ -1,0 +1,14 @@
+[package]
+name = "thermite-core"
+version = "0.1.0"
+description = "Thermite's hardware access: sensors, thresholds, fans, fan control and fan curves"
+edition = "2021"
+publish = false
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+libc = "0.2"
+
+[dev-dependencies]
+tempfile = "3"

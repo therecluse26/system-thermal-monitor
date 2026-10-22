@@ -8,10 +8,9 @@ use std::path::PathBuf;
 
 use nvml_wrapper::enum_wrappers::device::{TemperatureSensor, TemperatureThreshold};
 use nvml_wrapper::{Device, Nvml};
-
-use crate::fans::{Fan, FanInput, FanReading, ShareKind};
-use crate::sensors::{Category, Input, Sensor};
-use crate::thresholds;
+use thermite_core::fans::{Fan, FanInput, FanReading, ShareKind};
+use thermite_core::sensors::{Category, Input, Sensor};
+use thermite_core::thresholds;
 
 pub struct Nvidia {
     nvml: Nvml,

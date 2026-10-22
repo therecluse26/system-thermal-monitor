@@ -3377,12 +3377,21 @@ dependencies = [
 name = "thermite"
 version = "0.1.0"
 dependencies = [
- "libc",
  "nvml-wrapper",
  "serde",
  "serde_json",
  "tauri",
  "tauri-build",
+ "thermite-core",
+]
+
+[[package]]
+name = "thermite-core"
+version = "0.1.0"
+dependencies = [
+ "libc",
+ "serde",
+ "serde_json",
  "tempfile",
 ]
 

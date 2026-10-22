@@ -1,19 +1,16 @@
 //! Samples every sensor on a fixed interval and keeps a rolling history.
 
 use std::collections::VecDeque;
-use std::time::Duration;
 
 use serde::Serialize;
+use thermite_core::fans::{self, Fan, FanInput, FanReading};
+use thermite_core::sensors::{self, Input, Sensor, SysPaths};
+use thermite_core::{INTERVAL, RESCAN_EVERY};
 
-use crate::fans::{self, Fan, FanInput, FanReading};
 use crate::nvidia::Nvidia;
-use crate::sensors::{self, Input, Sensor, SysPaths};
 
-pub const INTERVAL: Duration = Duration::from_secs(1);
 /// 30 minutes at one sample per second: the longest window the UI offers.
 pub const HISTORY_LEN: usize = 1800;
-/// Look for sensors and fans that appeared after start-up (a woken dGPU, a hot-plugged drive).
-pub const RESCAN_EVERY: u64 = 30;
 
 /// One reading of every sensor and fan. `values` and `fans` line up with the
 /// sensor and fan lists of the same `generation`.

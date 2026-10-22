@@ -1,17 +1,9 @@
 // Prevents an extra console window on Windows in release builds.
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
-mod control;
-mod curve;
-mod fans;
-mod helper;
+mod link;
 mod monitor;
 mod nvidia;
-mod sensors;
-mod settings;
-#[cfg(test)]
-mod testsys;
-mod thresholds;
 
 use std::path::PathBuf;
 use std::sync::Mutex;
@@ -19,11 +11,13 @@ use std::thread;
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use tauri::{AppHandle, Emitter, Manager, State};
+use thermite_core::helper::{self, Plan};
+use thermite_core::sensors::SysPaths;
+use thermite_core::settings::Settings;
+use thermite_core::INTERVAL;
 
-use helper::{ControlState, Link, Plan};
-use monitor::{Monitor, Snapshot, INTERVAL};
-use sensors::SysPaths;
-use settings::Settings;
+use link::{ControlState, Link};
+use monitor::{Monitor, Snapshot};
 
 struct AppState {
     monitor: Mutex<Monitor>,

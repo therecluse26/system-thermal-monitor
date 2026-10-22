@@ -249,17 +249,24 @@ At start-up, the app moves settings saved under the ids of earlier versions to t
 
 ## Code layout
 
+The Rust code is a Cargo workspace in `src-tauri`, with two crates:
+
+- `thermite-core` (`src-tauri/core`): hardware access that the window and the fan helper share.
+  It has no Tauri and no NVML code.
+- `thermite` (`src-tauri/src`): the Tauri app.
+
 | Path | Contents |
 |---|---|
-| `src-tauri/src/sensors.rs` | Finds hwmon sensors, names them, reads them |
-| `src-tauri/src/fans.rs` | Finds and reads fans, drops duplicate drivers |
-| `src-tauri/src/control.rs` | Sets fan speeds through hwmon; driver exceptions; finds other fan controllers |
-| `src-tauri/src/curve.rs` | Fan curves: duty per temperature, hysteresis |
-| `src-tauri/src/helper.rs` | The root fan helper, the plan it runs, and the window's end of the pipe |
+| `src-tauri/core/src/sensors.rs` | Finds hwmon sensors, names them, reads them |
+| `src-tauri/core/src/fans.rs` | Finds and reads fans, drops duplicate drivers |
+| `src-tauri/core/src/control.rs` | Sets fan speeds through hwmon; driver exceptions; finds other fan controllers |
+| `src-tauri/core/src/curve.rs` | Fan curves: duty per temperature, hysteresis |
+| `src-tauri/core/src/helper.rs` | The root fan helper and the plan it runs |
+| `src-tauri/core/src/thresholds.rs` | Default thresholds per sensor driver |
+| `src-tauri/core/src/settings.rs` | Saved overrides, hidden sensors, time window, fastest fan speeds, fan curves |
+| `src-tauri/src/link.rs` | The window's end of the pipe: starts the fan helper through `pkexec` |
 | `src-tauri/src/nvidia.rs` | NVIDIA GPU temperatures and fans through NVML |
-| `src-tauri/src/thresholds.rs` | Default thresholds per sensor driver |
 | `src-tauri/src/monitor.rs` | 1 Hz sampler and the 30-minute history |
-| `src-tauri/src/settings.rs` | Saved overrides, hidden sensors, time window, fastest fan speeds, fan curves |
 | `src-tauri/src/main.rs` | Tauri commands (`snapshot`, `get_settings`, `save_settings`), the `sample` event, `--fan-helper` |
 | `src/chart.ts` | Canvas chart: area, lines or band; grid, threshold lines, hover crosshair |
 | `src/main.ts` | Groups sensors into chart cards; threshold editor, hidden list, summary bar |
@@ -273,6 +280,8 @@ At start-up, the app moves settings saved under the ids of earlier versions to t
 | `.github/scripts/` | Chooses the next version; writes the release notes |
 
 ## Tests
+
+In `src-tauri`, `cargo test` and `cargo clippy` cover both crates of the workspace.
 
 ```sh
 cd src-tauri
