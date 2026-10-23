@@ -40,6 +40,8 @@ This is a WebKitGTK problem with some GPU drivers, not a problem in this app.
 Each push to `main` publishes a GitHub release with a `.deb`, an `.rpm` and an AppImage.
 The packages are built on Ubuntu 22.04, so they also run on older distributions.
 Each package also carries the fan daemon, `thermite-fand`, as a static binary (see Fan daemon).
+The AppImage also goes up as `thermite_amd64.AppImage`, a name without the version.
+So `releases/latest/download/thermite_amd64.AppImage` is always the newest. The NixOS module uses it (see On NixOS).
 Before the build, the release workflow runs the same checks as pull requests: the frontend build, clippy and `cargo test`.
 
 The commit messages since the last release tag decide the new version:
@@ -228,7 +230,7 @@ The driver must have both `pwmN` and `pwmN_enable`.
 
 `thermite-fand` runs the fan settings of one user from boot, without the window and without a password dialog.
 
-On NixOS, the module in this repository's flake starts it at boot (see On NixOS below).
+On NixOS, the module in this repository's flake starts it at boot, and installs the window (see On NixOS below).
 The packages for other distributions carry it, but nothing installs or starts it there yet: there is no install switch.
 
 - Each package puts it at `/usr/libexec/thermite/thermite-fand`. In the AppImage it is at `usr/libexec/thermite/thermite-fand`.
@@ -266,7 +268,11 @@ sudo target/release/thermite-fand "$USER"      # Ctrl+C gives every fan back
 
 #### On NixOS
 
-The flake in this repository has a NixOS module, `services.thermite-fand`, that starts the daemon at boot.
+The flake in this repository has a NixOS module with two options:
+
+- `programs.thermite` installs the window, from a release AppImage.
+- `services.thermite-fand` starts the fan daemon at boot.
+
 Add it to your system flake:
 
 ```nix
@@ -275,12 +281,21 @@ Add it to your system flake:
     url = "github:therecluse26/thermite";   # or "git+file:///path/to/thermite" for a local clone
     inputs.nixpkgs.follows = "nixpkgs";
   };
+  # The newest release AppImage. `file+`: one plain file, not an archive to unpack.
+  inputs.thermite-appimage = {
+    url = "file+https://github.com/therecluse26/thermite/releases/latest/download/thermite_amd64.AppImage";
+    flake = false;
+  };
 
-  outputs = { nixpkgs, thermite, ... }: {
+  outputs = { nixpkgs, thermite, thermite-appimage, ... }: {
     nixosConfigurations.my-machine = nixpkgs.lib.nixosSystem {
       modules = [
         thermite.nixosModules.default
         {
+          programs.thermite = {
+            enable = true;
+            appimage = thermite-appimage;
+          };
           services.thermite-fand = {
             enable = true;
             user = "alice";                  # the user whose fan settings the daemon runs
@@ -292,6 +307,19 @@ Add it to your system flake:
   };
 }
 ```
+
+`nix flake update thermite thermite-appimage` moves both to the newest release. Then rebuild.
+
+The window:
+
+- The module builds nothing for it. A `thermite` command runs the AppImage through `appimage-run`,
+  which unpacks it once into `~/.cache/appimage-run`. The desktop entry and the icons come from this repository.
+- The package holds an executable copy of the AppImage. Without the daemon, the window starts its fan helper as
+  `pkexec $APPIMAGE --fan-helper`, and root can run that file only with `programs.appimage.binfmt = true`.
+- The release URL always gives the newest AppImage, but the lock pins one. After a garbage collection,
+  a rebuild with an old lock fails with a hash mismatch when a newer release exists. `nix flake update thermite-appimage` fixes that.
+
+The daemon:
 
 - The module builds the daemon from source with the system's `nixpkgs`. It is a glibc binary, not the static one of the packages.
   `nix build .#thermite-fand` builds the same binary: `result/bin/thermite-fand`.
@@ -372,7 +400,8 @@ The Rust code is a Cargo workspace in `src-tauri`, with two crates:
 | `.github/workflows/release.yml` | Builds the packages and publishes the release |
 | `.github/scripts/` | Chooses the next version; writes the release notes; builds the static fan daemon |
 | `flake.nix`, `nix/package.nix` | The fan daemon as a Nix package |
-| `nix/module.nix` | The NixOS module `services.thermite-fand` |
+| `nix/module.nix` | The NixOS module: `programs.thermite` and `services.thermite-fand` |
+| `nix/appimage.nix` | The window from a release AppImage, run through `appimage-run` |
 | `nix/test.nix` | NixOS VM test of the module |
 
 ## Tests
@@ -396,6 +425,7 @@ nix flake check                           # that test, and the package build wit
 ```
 
 - The VM has no fans. So the test covers the service around the daemon, with the hardening on.
+- The VM has no desktop. For the window, it checks the `thermite` command, the AppImage copy, the desktop entry and the icon.
 - It checks that the user can read the status file, and that the daemon reads settings in a home directory of mode 700.
   It checks that the daemon gives way to a process that looks like `fw-fanctrl run`, and that a stop removes `/run/thermite`.
 - The package build skips `root_has_a_home`. The build sandbox's `/etc/passwd` gives root the home `/build`.

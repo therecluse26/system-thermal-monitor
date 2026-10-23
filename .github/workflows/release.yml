@@ -72,6 +72,8 @@ jobs:
           --config "{\"version\":\"$VERSION\"}"
 
       # "Thermite_1.2.3_amd64.deb" becomes "thermite_1.2.3_amd64.deb".
+      # The AppImage also goes up as "thermite_amd64.AppImage", a name without the version. So
+      # releases/latest/download/thermite_amd64.AppImage is always the newest, for the NixOS module.
       - name: Collect the packages
         run: |
           mkdir release
@@ -80,6 +82,7 @@ jobs:
             name=${file##*/}
             cp "$file" "release/thermite${name#Thermite}"
           done
+          cp "release/thermite_${VERSION}_amd64.AppImage" release/thermite_amd64.AppImage
           cd release
           sha256sum -- * > SHA256SUMS
           ls -l
