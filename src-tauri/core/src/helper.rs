@@ -212,16 +212,26 @@ impl Controller {
             .sensors
             .get(&fan_plan.curve.sensor)
             .ok_or_else(|| format!("sensor {} not found", fan_plan.curve.sensor))?;
-        if !self.held.contains_key(id) {
-            let restore = control
-                .hold()
-                .map_err(|e| format!("could not put {id} in manual mode: {e}"))?;
-            let held = Held {
-                control: control.clone(),
-                restore,
-                duty: None,
-            };
-            self.held.insert(id.clone(), held);
+        match self.held.get_mut(id) {
+            // The mode found first stays the one to give back.
+            Some(held) if held.control.left_manual_mode() => {
+                eprintln!("thermite: {id} left manual mode, so it goes back to it");
+                held.control
+                    .hold()
+                    .map_err(|e| format!("could not put {id} back in manual mode: {e}"))?;
+            }
+            Some(_) => {}
+            None => {
+                let restore = control
+                    .hold()
+                    .map_err(|e| format!("could not put {id} in manual mode: {e}"))?;
+                let held = Held {
+                    control: control.clone(),
+                    restore,
+                    duty: None,
+                };
+                self.held.insert(id.clone(), held);
+            }
         }
         let held = self.held.get_mut(id).expect("held above");
         // A sensor that stops reading could hide a fire.
@@ -623,6 +633,30 @@ mod tests {
         sys.write("class/hwmon/hwmon2/temp1_input", "garbage\n");
         controller.tick();
         assert_eq!(sys.read("class/hwmon/hwmon2/pwm1"), "255");
+    }
+
+    #[test]
+    fn fan_that_the_firmware_takes_back_goes_back_to_manual_mode() {
+        let sys = board(60_000);
+        let mut controller = Controller::new(sys.paths());
+        controller.set_plan(plan(FAN, SENSOR));
+        controller.tick();
+        // On resume from suspend, the firmware turns its own curve back on.
+        sys.write("class/hwmon/hwmon2/pwm1_enable", "5\n");
+        controller.tick();
+        assert_eq!(sys.read("class/hwmon/hwmon2/pwm1_enable"), "1");
+    }
+
+    #[test]
+    fn fan_that_the_firmware_took_back_gets_the_mode_found_first() {
+        let sys = board(60_000);
+        let mut controller = Controller::new(sys.paths());
+        controller.set_plan(plan(FAN, SENSOR));
+        controller.tick();
+        sys.write("class/hwmon/hwmon2/pwm1_enable", "2\n");
+        controller.tick();
+        drop(controller);
+        assert_eq!(sys.read("class/hwmon/hwmon2/pwm1_enable"), "5");
     }
 
     #[test]

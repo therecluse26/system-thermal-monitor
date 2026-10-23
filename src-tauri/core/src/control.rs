@@ -125,6 +125,14 @@ impl FanControl {
         Ok(restore)
     }
 
+    /// True when a fan that `hold` put in manual mode is out of it again. Firmware can do
+    /// that, for example on resume from suspend. False when the mode does not read, and
+    /// for `EnableFile::AutoOnly`, where each duty write takes manual mode back.
+    pub fn left_manual_mode(&self) -> bool {
+        let Self::Hwmon { enable, enable_file, .. } = self;
+        *enable_file == EnableFile::Abi && read_trimmed(enable).is_some_and(|mode| mode != "1")
+    }
+
     /// Gives the fan back to its automatic mode: `restore` from `hold`, else the ABI's "2".
     pub fn release(&self, restore: Option<&str>) -> io::Result<()> {
         let Self::Hwmon { enable, .. } = self;

@@ -186,6 +186,8 @@ The driver must have both `pwmN` and `pwmN_enable`.
 
 - Drivers that follow the hwmon ABI: the helper writes `1` to `pwmN_enable`, then the duty to `pwmN`.
   When it lets go, it writes back the mode it found.
+  Firmware can turn its own mode back on, for example on resume from suspend.
+  The helper then writes `1` again on its next tick, and the fan daemon does too.
 - `framework_laptop`: any write to `pwmN_enable` gives control back to the EC.
   So the helper writes only `pwmN`, from 0 to 100. When it lets go, it writes `2` to `pwmN_enable`.
 - On a Framework, `cros_ec` reports the fans and `framework_laptop` owns the PWM files.
