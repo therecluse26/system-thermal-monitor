@@ -61,7 +61,7 @@ const $ = <T extends HTMLElement>(selector: string, root: ParentNode = document)
 let theme: ChartTheme;
 let snap: Snapshot | null = null;
 let settings: Settings = { overrides: {}, hidden: [], windowSecs: 300, fanPeaks: {}, fanCurves: {} };
-let fanControl: ControlState = { notice: null, status: { blockedBy: null, fans: [] } };
+let fanControl: ControlState = { notice: null, daemon: false, status: { blockedBy: null, fans: [] } };
 /** Refreshes the open fan control dialog when the control state or a reading changes. */
 let fanDialogUpdate: (() => void) | null = null;
 let views: View[] = [];
@@ -433,6 +433,7 @@ function render(): void {
       curve: settings.fanCurves[id],
       status: fanControl.status.fans.find((f) => f.fan === id),
       notice: fanControl.notice,
+      daemon: fanControl.daemon,
     });
   }
   renderSummary(counts);
@@ -684,6 +685,7 @@ function openFanControl(): void {
     const notice = $("#fan-control-notice");
     notice.textContent = fanControl.notice ? `Fan control does not apply now: ${fanControl.notice}.` : "";
     notice.hidden = !fanControl.notice;
+    $("#fan-control-daemon").hidden = !fanControl.daemon;
   };
   for (const button of scopeButtons) {
     button.onclick = () => {

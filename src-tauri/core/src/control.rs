@@ -30,7 +30,7 @@ const OTHER_CONTROLLERS: &[(&str, Option<&str>)] = &[
     ("fan2go", None),
     ("nbfc_service", None),
     // Thermite's own fan daemon. While it runs, the window's fan helper gives way to it.
-    ("thermite-fand", None),
+    (crate::daemon::PROGRAM, None),
 ];
 
 /// The name of another fan controller that runs now, if any. This process does not count,
@@ -66,7 +66,7 @@ pub fn other_controller(proc: &Path) -> Option<String> {
 const INTERPRETERS: &[&str] = &["bash", "sh", "perl"];
 
 /// "/nix/store/…/bin/.fw-fanctrl-wrapped" → "fw-fanctrl". Nix wraps programs that way.
-fn program_name(path: &str) -> Option<String> {
+pub(crate) fn program_name(path: &str) -> Option<String> {
     let name = Path::new(path).file_name()?.to_str()?;
     let name = name.strip_prefix('.').unwrap_or(name);
     Some(name.strip_suffix("-wrapped").unwrap_or(name).to_string())

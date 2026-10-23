@@ -1,5 +1,6 @@
 //! The window's end of the pipe to the fan helper. It starts the helper through pkexec,
-//! sends it each new plan, and follows its status.
+//! sends it each new plan, and follows its status. While the fan daemon runs the window's
+//! settings, it starts no helper and follows the daemon's status instead.
 //!
 //! In a sandbox that sets "no new privileges", pkexec cannot become root. On NixOS,
 //! `appimage-run` runs each AppImage in such a sandbox (bubblewrap). There the user's
@@ -26,7 +27,9 @@ pub struct ControlState {
     /// Why the fans with curves do not follow them, in a few words. `None` while they do,
     /// and while no fan has a curve.
     pub notice: Option<String>,
-    /// The fan helper's last status.
+    /// True while the fan daemon applies the settings. The window's fan helper does not run then.
+    pub daemon: bool,
+    /// The last status of the fan helper, or of the fan daemon.
     pub status: Status,
 }
 
@@ -52,8 +55,14 @@ fn update(shared: &mut Shared, state: ControlState, on_change: &OnChange) {
 fn notice(text: impl Into<String>) -> ControlState {
     ControlState {
         notice: Some(text.into()),
-        status: Status::default(),
+        ..ControlState::default()
     }
+}
+
+/// The state for a status that the fan helper or the fan daemon reported.
+fn reported(status: Status, daemon: bool) -> ControlState {
+    let notice = status.blocked_by.as_ref().map(|other| format!("{other} controls the fans"));
+    ControlState { notice, daemon, status }
 }
 
 /// The window's end of the pipe to the fan helper.
@@ -62,6 +71,8 @@ pub struct Link {
     /// The plan last sent. An unchanged plan is not sent again,
     /// so saving other settings does not show the password dialog again.
     sent: Option<Plan>,
+    /// True while the fan daemon follows this window's settings file.
+    daemon: bool,
     shared: Arc<Mutex<Shared>>,
     on_change: OnChange,
 }
@@ -72,6 +83,7 @@ impl Link {
         Self {
             stdin: None,
             sent: None,
+            daemon: false,
             shared: Arc::default(),
             on_change: Arc::new(on_change),
         }
@@ -84,7 +96,13 @@ impl Link {
     /// Sends `plan` to the fan helper when it changed. When the helper does not run,
     /// this starts it through pkexec, which shows the desktop's password dialog.
     /// `retry` also starts it for an unchanged plan: after a cancelled dialog, or a block.
+    /// While the fan daemon follows the settings file, this only keeps `plan`.
     pub fn apply(&mut self, plan: Plan, proc: &Path, retry: bool) {
+        if self.daemon {
+            // The daemon reads the saved settings itself.
+            self.sent = Some(plan);
+            return;
+        }
         let running = self.shared.lock().unwrap().running;
         if self.sent.as_ref() == Some(&plan) && (running || !retry) {
             return;
@@ -107,6 +125,37 @@ impl Link {
             return;
         }
         self.start(&plan);
+    }
+
+    /// Takes the status of the fan daemon that follows this window's settings file, or
+    /// `None` when none runs. While one runs, the window's fan helper does not: two
+    /// controllers on one fan fight each other. When the daemon stops, the window does not
+    /// start the helper by itself, because the password dialog would come without warning.
+    /// Apply in Fan control starts it, through `retry`.
+    pub fn watch_daemon(&mut self, status: Option<Status>) {
+        let state = match status {
+            Some(status) => {
+                if !self.daemon {
+                    eprintln!("thermite: the fan daemon applies the fan settings");
+                    self.stop();
+                    self.daemon = true;
+                }
+                reported(status, true)
+            }
+            None if self.daemon => {
+                eprintln!("thermite: the fan daemon stopped");
+                self.daemon = false;
+                let curves = self.sent.as_ref().is_some_and(|plan| !plan.fans.is_empty());
+                if curves {
+                    notice("The fan daemon stopped")
+                } else {
+                    ControlState::default()
+                }
+            }
+            None => return,
+        };
+        let mut shared = self.shared.lock().unwrap();
+        update(&mut shared, state, &self.on_change);
     }
 
     /// Closes the pipe, so the helper gives every fan back and exits.
@@ -211,8 +260,7 @@ fn watch(mut child: Child, generation: u64, shared: &Mutex<Shared>, on_change: &
         }
         let mut shared = shared.lock().unwrap();
         if shared.generation == generation {
-            let notice = status.blocked_by.as_ref().map(|other| format!("{other} controls the fans"));
-            update(&mut shared, ControlState { notice, status }, on_change);
+            update(&mut shared, reported(status, false), on_change);
         }
     }
     let exit = child.wait();
@@ -237,6 +285,79 @@ fn watch(mut child: Child, generation: u64, shared: &Mutex<Shared>, on_change: &
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::Duration;
+
+    use tempfile::TempDir;
+    use thermite_core::curve::{CurvePoint, FanCurve};
+    use thermite_core::helper::FanPlan;
+
+    /// One fan at a fixed level of 40%.
+    fn plan() -> Plan {
+        let curve = FanCurve {
+            sensor: "k10temp/0000:00:18.3/temp1".into(),
+            points: vec![CurvePoint { temp: 0.0, duty: 40.0 }],
+        };
+        Plan {
+            fans: vec![FanPlan {
+                fan: "cros_ec/cros-ec-hwmon/fan1".into(),
+                curve,
+                failsafe: 95.0,
+            }],
+        }
+    }
+
+    /// A `/proc` where thinkfan runs. A link that tries to start the fan helper
+    /// stops at thinkfan, so a test cannot start pkexec.
+    fn proc_with_thinkfan() -> TempDir {
+        let proc = tempfile::tempdir().unwrap();
+        fs::create_dir(proc.path().join("77")).unwrap();
+        fs::write(proc.path().join("77/cmdline"), "/usr/bin/thinkfan\0-n\0").unwrap();
+        proc
+    }
+
+    #[test]
+    fn the_window_starts_no_fan_helper_while_the_daemon_runs() {
+        let proc = proc_with_thinkfan();
+        let mut link = Link::new(|_| {});
+        link.watch_daemon(Some(Status::default()));
+        link.apply(plan(), proc.path(), true);
+        let state = link.state();
+        assert_eq!((state.daemon, state.notice), (true, None));
+    }
+
+    #[test]
+    fn the_window_closes_its_fan_helper_when_the_daemon_starts() {
+        // `cat` stands in for the helper: it also exits when its stdin closes.
+        let mut helper = Command::new("cat")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .spawn()
+            .unwrap();
+        let mut link = Link::new(|_| {});
+        link.stdin = helper.stdin.take();
+        link.shared.lock().unwrap().running = true;
+        link.watch_daemon(Some(Status::default()));
+        let exited = (0..500).any(|_| {
+            thread::sleep(Duration::from_millis(10));
+            helper.try_wait().unwrap().is_some()
+        });
+        let _ = helper.kill();
+        assert!(exited);
+    }
+
+    #[test]
+    fn the_window_says_so_when_the_daemon_stops() {
+        let proc = proc_with_thinkfan();
+        let mut link = Link::new(|_| {});
+        link.watch_daemon(Some(Status::default()));
+        link.apply(plan(), proc.path(), false);
+        link.watch_daemon(None);
+        let state = link.state();
+        assert_eq!(
+            (state.daemon, state.notice.as_deref()),
+            (false, Some("The fan daemon stopped"))
+        );
+    }
 
     #[test]
     fn a_failed_pkexec_shows_its_own_message() {

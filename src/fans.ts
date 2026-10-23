@@ -24,8 +24,10 @@ export interface FanView extends GaugeCard {
 export interface ControlInfo {
   /** The saved curve. One point means a fixed level. */
   curve: FanCurve | undefined;
-  /** This fan in the fan helper's last status. */
+  /** This fan in the last status of the fan helper or the fan daemon. */
   status: HelperFanStatus | undefined;
+  /** True while the fan daemon applies the settings. */
+  daemon: boolean;
   /** Why curves do not apply now, from the window. */
   notice: string | null;
 }
@@ -37,7 +39,7 @@ export function fixedLevel(curve: FanCurve | undefined): number | null {
 
 /** The mode line: what controls the fan now, and whether that works. */
 function controlLine(info: ControlInfo): { text: string; hint: string; state: "auto" | "on" | "off" | "failsafe" } {
-  const { curve, status, notice } = info;
+  const { curve, status, notice, daemon } = info;
   if (!curve) {
     return { text: "Automatic", hint: "The firmware sets the speed. To set it yourself, use Fan control in the top bar.", state: "auto" };
   }
@@ -55,13 +57,14 @@ function controlLine(info: ControlInfo): { text: string; hint: string; state: "a
     // The duty the helper set, not the saved one: right after Apply they can differ for a moment.
     const duty = Math.round(status.duty);
     const text = level != null ? `Fixed ${duty}%` : `Curve · ${duty}%`;
-    return { text, hint: `This app sets the fan to ${duty}% PWM duty.`, state: "on" };
+    const who = daemon ? "The fan daemon" : "This app";
+    return { text, hint: `${who} sets the fan to ${duty}% PWM duty.`, state: "on" };
   }
   return {
     text: notice ?? "Not applied",
     hint: notice
       ? `${mode} does not apply: ${notice}.`
-      : "The fan helper reports nothing for this fan. Its sensor may be missing.",
+      : `${daemon ? "The fan daemon" : "The fan helper"} reports nothing for this fan. Its sensor may be missing.`,
     state: "off",
   };
 }

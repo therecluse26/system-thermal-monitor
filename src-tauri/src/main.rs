@@ -5,12 +5,13 @@ mod link;
 mod monitor;
 mod nvidia;
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::thread;
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use tauri::{AppHandle, Emitter, Manager, State};
+use thermite_core::daemon;
 use thermite_core::helper::{self, Plan};
 use thermite_core::sensors::SysPaths;
 use thermite_core::settings::Settings;
@@ -31,6 +32,23 @@ struct AppState {
 fn sync_fan_curves(state: &AppState, retry: bool) {
     let plan = Plan::new(&state.settings.lock().unwrap(), state.monitor.lock().unwrap().sensors());
     state.fan_helper.lock().unwrap().apply(plan, &SysPaths::default().proc, retry);
+}
+
+/// Tells the link whether the fan daemon runs for this window's settings file.
+/// A daemon that follows another file counts as another fan controller.
+fn watch_daemon(state: &AppState) {
+    let status = daemon::running(Path::new(daemon::STATUS), &SysPaths::default().proc)
+        .filter(|file| file.follows(&state.settings_path))
+        .map(|file| file.status);
+    state.fan_helper.lock().unwrap().watch_daemon(status);
+}
+
+/// Looks for the fan daemon once per `INTERVAL`, so the window sees it start and stop.
+fn spawn_daemon_watch(app: AppHandle) {
+    thread::spawn(move || loop {
+        thread::sleep(INTERVAL);
+        watch_daemon(&app.state::<AppState>());
+    });
 }
 
 #[tauri::command]
@@ -132,8 +150,12 @@ fn main() {
                     let _ = handle.emit("fan-control", control);
                 })),
             });
-            sync_fan_curves(&app.state::<AppState>(), false);
+            let state = app.state::<AppState>();
+            // First, so the window asks for no password while the fan daemon runs.
+            watch_daemon(&state);
+            sync_fan_curves(&state, false);
             spawn_sampler(app.handle().clone());
+            spawn_daemon_watch(app.handle().clone());
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![

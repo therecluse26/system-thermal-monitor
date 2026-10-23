@@ -15,6 +15,9 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
 use std::thread;
 
+use serde::{Deserialize, Serialize};
+
+use crate::control;
 use crate::helper::{self, Controller, Plan, Status, StatusLog};
 use crate::sensors::{self, Sensor, SysPaths};
 use crate::settings::Settings;
@@ -22,6 +25,9 @@ use crate::{INTERVAL, RESCAN_EVERY};
 
 /// The daemon's last status. systemd removes `/run/thermite` when the service stops.
 pub const STATUS: &str = "/run/thermite/status.json";
+
+/// The daemon's program name. The window and the fan helper look for it.
+pub const PROGRAM: &str = "thermite-fand";
 
 /// Where the window saves the settings, below the user's home directory.
 /// The daemon does not follow `XDG_CONFIG_HOME`.
@@ -87,10 +93,39 @@ impl Follower {
     }
 }
 
+/// What the daemon writes to `STATUS`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StatusFile {
+    /// The daemon's process id, so a reader can tell when the daemon is gone.
+    pub pid: u32,
+    /// The settings file that the daemon follows.
+    pub settings: PathBuf,
+    pub status: Status,
+}
+
+impl StatusFile {
+    /// True when the daemon follows the settings file at `path`.
+    pub fn follows(&self, path: &Path) -> bool {
+        // A symlink in either path gives the file a second name.
+        let real = |p: &Path| fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf());
+        real(&self.settings) == real(path)
+    }
+}
+
+/// The status file of the daemon that runs now. `None` when no daemon runs, also when
+/// a daemon that got `SIGKILL` left its file behind.
+pub fn running(status: &Path, proc: &Path) -> Option<StatusFile> {
+    let file: StatusFile = serde_json::from_str(&fs::read_to_string(status).ok()?).ok()?;
+    let cmdline = fs::read(proc.join(file.pid.to_string()).join("cmdline")).ok()?;
+    let program = cmdline.split(|b| *b == 0).next()?;
+    (control::program_name(std::str::from_utf8(program).ok()?)? == PROGRAM).then_some(file)
+}
+
 /// Replaces the status file in one step, so a reader never sees half a status.
-fn write_status(path: &Path, status: &Status) -> io::Result<()> {
+fn write_status(path: &Path, file: &StatusFile) -> io::Result<()> {
     let tmp = path.with_extension("json.tmp");
-    fs::write(&tmp, serde_json::to_string(status).expect("status is plain data"))?;
+    fs::write(&tmp, serde_json::to_string(file).expect("status is plain data"))?;
     fs::rename(tmp, path)
 }
 
@@ -99,7 +134,12 @@ fn write_status(path: &Path, status: &Status) -> io::Result<()> {
 /// and the status file is gone.
 pub fn run(paths: SysPaths, settings: PathBuf, status: &Path, stop: &AtomicBool) -> Result<(), String> {
     let cannot_write = |e: &io::Error| format!("cannot write {}: {e}", status.display());
-    write_status(status, &Status::default()).map_err(|e| cannot_write(&e))?;
+    let mut file = StatusFile {
+        pid: std::process::id(),
+        settings: settings.clone(),
+        status: Status::default(),
+    };
+    write_status(status, &file).map_err(|e| cannot_write(&e))?;
     let (plans, received) = mpsc::channel();
     let mut follower = Follower::new(settings, paths.clone());
     let done = AtomicBool::new(false);
@@ -123,7 +163,8 @@ pub fn run(paths: SysPaths, settings: PathBuf, status: &Path, stop: &AtomicBool)
             if log.worth_a_line(s) {
                 eprintln!("thermite-fand: {}", serde_json::to_string(s).expect("status is plain data"));
             }
-            write_status(status, s).inspect_err(|e| failed = Some(cannot_write(e)))
+            file.status = s.clone();
+            write_status(status, &file).inspect_err(|e| failed = Some(cannot_write(e)))
         };
         helper::run(Controller::new(paths), &received, report, stop);
         done.store(true, Ordering::Relaxed);
@@ -309,6 +350,51 @@ mod tests {
         assert_eq!(
             (set, result, sys.read("class/hwmon/hwmon2/pwm1_enable"), status.exists()),
             (true, Ok(()), "5".to_string(), false)
+        );
+    }
+
+    /// A status file as the daemon with process id `pid` writes it.
+    fn status_file(sys: &FakeSys, pid: u32) -> PathBuf {
+        let file = StatusFile {
+            pid,
+            settings: sys.path("home/.config/local.thermite/settings.json"),
+            status: Status::default(),
+        };
+        sys.write("run/thermite/status.json", &serde_json::to_string(&file).unwrap());
+        sys.path("run/thermite/status.json")
+    }
+
+    #[test]
+    fn running_daemon_is_found_by_its_status_file() {
+        let sys = FakeSys::new();
+        sys.write("proc/812/cmdline", "/usr/bin/thermite-fand\0brad\0");
+        let status = status_file(&sys, 812);
+        assert_eq!(running(&status, &sys.paths().proc).map(|f| f.pid), Some(812));
+    }
+
+    #[test]
+    fn status_file_that_a_killed_daemon_left_does_not_count() {
+        let sys = FakeSys::new();
+        // Another program got the process id after the kill.
+        sys.write("proc/812/cmdline", "/usr/bin/bash\0");
+        let status = status_file(&sys, 812);
+        assert_eq!(running(&status, &sys.paths().proc), None);
+    }
+
+    #[test]
+    fn daemon_follows_the_settings_file_also_by_another_name() {
+        let sys = FakeSys::new();
+        let path = save_curve(&sys, SENSOR, &[(50.0, 40.0)]);
+        std::os::unix::fs::symlink(sys.path("home"), sys.path("home-link")).unwrap();
+        let file = StatusFile {
+            pid: 812,
+            settings: path,
+            status: Status::default(),
+        };
+        let other_name = sys.path("home-link/.config/local.thermite/settings.json");
+        assert_eq!(
+            (file.follows(&other_name), file.follows(&sys.path("other/settings.json"))),
+            (true, false)
         );
     }
 

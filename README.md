@@ -127,7 +127,7 @@ Fan control has no compatibility guarantees. It is tested only on a Framework La
 A fan card whose speed the app can set has a mode line under the speed. It shows:
 
 - **Automatic**: the firmware sets the speed.
-- **Fixed 40%**, or **Curve · 58%**: the duty this app set in the last second.
+- **Fixed 40%**, or **Curve · 58%**: the duty that this app or the fan daemon set in the last second.
 - **Full speed: failsafe**: see the safety rules below.
 - Otherwise, why the setting does not apply now, for example "Waiting for your password".
 
@@ -158,6 +158,7 @@ Only root can set fan speeds, so the app splits the work:
 
 - When there are saved curves, the app starts a small **fan helper** as root through `pkexec`.
   After a cancelled password dialog, Apply in the fan control asks again.
+  While the fan daemon runs your settings, the app starts no helper and shows no password dialog.
 - Your desktop shows its own password dialog. The app never sees the password.
 - In a sandbox that sets "no new privileges", `pkexec` cannot become root.
   On NixOS, `appimage-run` runs each AppImage in such a sandbox.
@@ -234,7 +235,15 @@ sudo target/release/thermite-fand "$USER"      # Ctrl+C gives every fan back
 - The safety rules above apply to it too. It also sets no fan while another fan controller runs.
 - It writes each new status to `/run/thermite/status.json`, and deletes the file when it stops.
 - Closing the window does not stop it. `SIGTERM`, `SIGINT` and `SIGHUP` stop it, and it gives every fan back first.
-- While it runs, the window's fan helper gives way to it. For now the window says "thermite-fand controls the fans".
+- The window checks for it once per second, through that file and the process id in it.
+  A file that a killed daemon left behind does not count.
+- While it runs your settings file, the window starts no fan helper and shows no password dialog.
+  The fan cards show the duty that the daemon set. Fan control says that the daemon applies the settings.
+- When it starts while the window's fan helper runs, the window closes the helper within a second.
+- When it stops, the window shows "The fan daemon stopped". The window does not ask for a password by itself.
+  Apply in Fan control starts the fan helper.
+- A daemon that follows another settings file counts as another fan controller: "thermite-fand controls the fans".
+  That happens when `XDG_CONFIG_HOME` moves the window's settings.
 
 ## How the thresholds are chosen
 
@@ -288,7 +297,7 @@ The Rust code is a Cargo workspace in `src-tauri`, with two crates:
 | `src-tauri/core/src/daemon.rs` | The fan daemon `thermite-fand`: follows the user's settings file, writes its status |
 | `src-tauri/core/src/thresholds.rs` | Default thresholds per sensor driver |
 | `src-tauri/core/src/settings.rs` | Saved overrides, hidden sensors, time window, fastest fan speeds, fan curves |
-| `src-tauri/src/link.rs` | The window's end of the pipe: starts the fan helper through `pkexec` |
+| `src-tauri/src/link.rs` | The window's end of the pipe: starts the fan helper through `pkexec`, or follows the fan daemon |
 | `src-tauri/src/nvidia.rs` | NVIDIA GPU temperatures and fans through NVML |
 | `src-tauri/src/monitor.rs` | 1 Hz sampler and the 30-minute history |
 | `src-tauri/src/main.rs` | Tauri commands (`snapshot`, `get_settings`, `save_settings`), the `sample` event, `--fan-helper` |

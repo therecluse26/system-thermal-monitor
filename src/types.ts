@@ -94,7 +94,7 @@ export interface FanCurve {
   points: CurvePoint[];
 }
 
-/** What happened to one fan in the fan helper's last tick. */
+/** What happened to one fan in the last tick of the fan helper or the fan daemon. */
 export interface HelperFanStatus {
   fan: string;
   /** The duty set, in percent. null when the fan did not take it. */
@@ -108,6 +108,8 @@ export interface HelperFanStatus {
 export interface ControlState {
   /** Why the fans with curves do not follow them, in a few words. null while they do. */
   notice: string | null;
+  /** True while the fan daemon applies the settings. The window's fan helper does not run then. */
+  daemon: boolean;
   status: {
     /** Another fan controller that runs now. */
     blockedBy: string | null;
