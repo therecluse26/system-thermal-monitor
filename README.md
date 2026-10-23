@@ -228,7 +228,8 @@ The driver must have both `pwmN` and `pwmN_enable`.
 
 `thermite-fand` runs the fan settings of one user from boot, without the window and without a password dialog.
 
-The packages carry it, but nothing installs or starts it yet: there is no systemd unit and no install switch.
+On NixOS, the module in this repository's flake starts it at boot (see On NixOS below).
+The packages for other distributions carry it, but nothing installs or starts it there yet: there is no install switch.
 
 - Each package puts it at `/usr/libexec/thermite/thermite-fand`. In the AppImage it is at `usr/libexec/thermite/thermite-fand`.
 - It is a static musl binary. It needs no glibc and no loader, so it runs on every distribution.
@@ -262,6 +263,46 @@ sudo target/release/thermite-fand "$USER"      # Ctrl+C gives every fan back
   Apply in Fan control starts the fan helper.
 - A daemon that follows another settings file counts as another fan controller: "thermite-fand controls the fans".
   That happens when `XDG_CONFIG_HOME` moves the window's settings.
+
+#### On NixOS
+
+The flake in this repository has a NixOS module, `services.thermite-fand`, that starts the daemon at boot.
+Add it to your system flake:
+
+```nix
+{
+  inputs.thermite = {
+    url = "github:therecluse26/thermite";   # or "git+file:///path/to/thermite" for a local clone
+    inputs.nixpkgs.follows = "nixpkgs";
+  };
+
+  outputs = { nixpkgs, thermite, ... }: {
+    nixosConfigurations.my-machine = nixpkgs.lib.nixosSystem {
+      modules = [
+        thermite.nixosModules.default
+        {
+          services.thermite-fand = {
+            enable = true;
+            user = "alice";                  # the user whose fan settings the daemon runs
+          };
+        }
+        # ...your other modules
+      ];
+    };
+  };
+}
+```
+
+- The module builds the daemon from source with the system's `nixpkgs`. It is a glibc binary, not the static one of the packages.
+  `nix build .#thermite-fand` builds the same binary: `result/bin/thermite-fand`.
+- The service is `thermite-fand.service`. Its log: `journalctl -u thermite-fand`.
+- The module warns when `users.users` has no user of the name in `user`.
+- When `nixos-rebuild switch` brings a new daemon, systemd restarts it. The old daemon gives every fan back first.
+- A fan controller that also starts at boot starts first: fw-fanctrl, fancontrol, thinkfan or coolercontrold.
+  So the daemon finds it at once and sets no fan, instead of at its first check 30 seconds later.
+- The service is hardened. Everything except `/proc`, `/sys` and `/run/thermite` is read-only to it, also the home directories.
+  It has no network. Its only capability is `CAP_DAC_READ_SEARCH`, to read the settings in a home directory of mode 700.
+  `systemd-analyze security thermite-fand` rates it 1.5.
 
 ## How the thresholds are chosen
 
@@ -328,7 +369,10 @@ The Rust code is a Cargo workspace in `src-tauri`, with two crates:
 | `src/curve-editor.ts` | Fan curve editor: drag points, exact numbers, temperature now |
 | `.github/workflows/ci.yml` | Checks for pull requests: frontend build, clippy, tests |
 | `.github/workflows/release.yml` | Builds the packages and publishes the release |
-| `.github/scripts/` | Chooses the next version; writes the release notes |
+| `.github/scripts/` | Chooses the next version; writes the release notes; builds the static fan daemon |
+| `flake.nix`, `nix/package.nix` | The fan daemon as a Nix package |
+| `nix/module.nix` | The NixOS module `services.thermite-fand` |
+| `nix/test.nix` | NixOS VM test of the module |
 
 ## Tests
 
@@ -342,3 +386,15 @@ cargo test real_fans -- --ignored --nocapture        # prints the fans of this m
 cargo test real_monitor -- --ignored --nocapture     # NVML status, counts, and the ids that settings move between
 cargo test leaves_a_sandbox -- --ignored             # needs bwrap: pkexec can become root from a sandbox
 ```
+
+The flake has its own checks. They need Nix, and the VM test needs KVM:
+
+```sh
+nix build .#checks.x86_64-linux.module    # NixOS VM test of the module, about 2 minutes
+nix flake check                           # that test, and the package build with the core tests
+```
+
+- The VM has no fans. So the test covers the service around the daemon, with the hardening on.
+- It checks that the user can read the status file, and that the daemon reads settings in a home directory of mode 700.
+  It checks that the daemon gives way to a process that looks like `fw-fanctrl run`, and that a stop removes `/run/thermite`.
+- The package build skips `root_has_a_home`. The build sandbox's `/etc/passwd` gives root the home `/build`.
