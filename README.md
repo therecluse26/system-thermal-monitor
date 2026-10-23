@@ -25,6 +25,13 @@ npm run tauri build -- --no-bundle      # release binary: src-tauri/target/relea
 `npm run tauri build` without `--no-bundle` also makes `.deb`, `.rpm` and AppImage installers.
 On NixOS, use `--no-bundle`; the installer formats do not suit NixOS.
 
+The installers of a release also carry the fan daemon. To build them the same way, add the release config:
+
+```sh
+rustup target add x86_64-unknown-linux-musl      # once
+npm run tauri build -- --config src-tauri/tauri.release.conf.json
+```
+
 If the window stays blank, start the app with `WEBKIT_DISABLE_DMABUF_RENDERER=1`.
 This is a WebKitGTK problem with some GPU drivers, not a problem in this app.
 
@@ -32,6 +39,7 @@ This is a WebKitGTK problem with some GPU drivers, not a problem in this app.
 
 Each push to `main` publishes a GitHub release with a `.deb`, an `.rpm` and an AppImage.
 The packages are built on Ubuntu 22.04, so they also run on older distributions.
+Each package also carries the fan daemon, `thermite-fand`, as a static binary (see Fan daemon).
 Before the build, the release workflow runs the same checks as pull requests: the frontend build, clippy and `cargo test`.
 
 The commit messages since the last release tag decide the new version:
@@ -219,7 +227,17 @@ The driver must have both `pwmN` and `pwmN_enable`.
 ### Fan daemon
 
 `thermite-fand` runs the fan settings of one user from boot, without the window and without a password dialog.
-The packages do not include it yet. To try it, build it and start it as root:
+
+The packages carry it, but nothing installs or starts it yet: there is no systemd unit and no install switch.
+
+- Each package puts it at `/usr/libexec/thermite/thermite-fand`. In the AppImage it is at `usr/libexec/thermite/thermite-fand`.
+- It is a static musl binary. It needs no glibc and no loader, so it runs on every distribution.
+- It is not in `usr/bin`: linuxdeploy rewrites the ELF files there for the AppImage, and a rewritten static binary crashes.
+  The release workflow runs the daemon from the AppImage and the `.deb` before it publishes them.
+- `.github/scripts/build-daemon.sh` builds it. `src-tauri/tauri.release.conf.json` runs that script and adds the
+  binary to each package through `files`. That config is for release builds only, so other builds need no musl target.
+
+To try it, build it and start it as root:
 
 ```sh
 cd src-tauri

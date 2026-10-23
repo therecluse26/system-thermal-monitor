@@ -57,11 +57,19 @@ jobs:
 
       - uses: ./.github/actions/setup
 
-      # The version goes in through --config, so no commit is needed to bump it.
+      # The fan daemon in the packages is a static musl binary.
+      - name: Add the musl target
+        run: rustup target add x86_64-unknown-linux-musl
+
+      # tauri.release.conf.json builds the fan daemon and adds it to the packages.
+      # The version goes in through --config too, so no commit is needed to bump it.
       - name: Build the packages
         env:
           APPIMAGE_EXTRACT_AND_RUN: 1 # linuxdeploy runs without FUSE
-        run: npm run tauri build -- --bundles deb,rpm,appimage --config "{\"version\":\"$VERSION\"}"
+        run: >-
+          npm run tauri build -- --bundles deb,rpm,appimage
+          --config src-tauri/tauri.release.conf.json
+          --config "{\"version\":\"$VERSION\"}"
 
       # "Thermite_1.2.3_amd64.deb" becomes "thermite_1.2.3_amd64.deb".
       - name: Collect the packages
@@ -75,6 +83,23 @@ jobs:
           cd release
           sha256sum -- * > SHA256SUMS
           ls -l
+
+      # linuxdeploy rewrites the ELF files in the AppImage's usr/bin, and a rewritten static
+      # binary crashes. So the fan daemon lives in usr/libexec; this checks that it still runs.
+      - name: Check the fan daemon in the packages
+        run: |
+          appimage=(release/*.AppImage)
+          deb=(release/*.deb)
+          cd "$(mktemp -d)"
+          "$GITHUB_WORKSPACE/${appimage[0]}" --appimage-extract > /dev/null
+          dpkg-deb -x "$GITHUB_WORKSPACE/${deb[0]}" deb
+          for daemon in {squashfs-root,deb}/usr/libexec/thermite/thermite-fand; do
+            usage=$("$daemon" 2>&1) || true
+            if [[ $usage != "usage: thermite-fand <user>" ]]; then
+              echo "$daemon does not run: $usage" >&2
+              exit 1
+            fi
+          done
 
       - name: Write the release notes
         run: .github/scripts/changelog.sh "$PREVIOUS" "$TAG" > notes.md

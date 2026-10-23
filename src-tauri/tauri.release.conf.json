@@ -1,0 +1,18 @@
+{
+  "build": {
+    "beforeBuildCommand": "npm run build && .github/scripts/build-daemon.sh"
+  },
+  "bundle": {
+    "linux": {
+      "appimage": {
+        "files": { "/usr/libexec/thermite/thermite-fand": "binaries/thermite-fand" }
+      },
+      "deb": {
+        "files": { "/usr/libexec/thermite/thermite-fand": "binaries/thermite-fand" }
+      },
+      "rpm": {
+        "files": { "/usr/libexec/thermite/thermite-fand": "binaries/thermite-fand" }
+      }
+    }
+  }
+}
