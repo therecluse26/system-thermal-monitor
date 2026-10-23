@@ -298,8 +298,9 @@ Add it to your system flake:
 - The service is `thermite-fand.service`. Its log: `journalctl -u thermite-fand`.
 - The module warns when `users.users` has no user of the name in `user`.
 - When `nixos-rebuild switch` brings a new daemon, systemd restarts it. The old daemon gives every fan back first.
-- A fan controller that also starts at boot starts first: fw-fanctrl, fancontrol, thinkfan or coolercontrold.
-  So the daemon finds it at once and sets no fan, instead of at its first check 30 seconds later.
+- The unit has no order after other fan controllers. The NixOS fw-fanctrl unit starts after `multi-user.target`,
+  so that order would be a cycle, and systemd would then not start the daemon at boot.
+  When another fan controller also starts at boot, the daemon finds it at its next check, within 30 seconds.
 - The service is hardened. Everything except `/proc`, `/sys` and `/run/thermite` is read-only to it, also the home directories.
   It has no network. Its only capability is `CAP_DAC_READ_SEARCH`, to read the settings in a home directory of mode 700.
   `systemd-analyze security thermite-fand` rates it 1.5.

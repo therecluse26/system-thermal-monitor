@@ -47,15 +47,9 @@ in
     systemd.services.thermite-fand = {
       description = "Thermite fan daemon";
       wantedBy = [ "multi-user.target" ];
-      # When another fan controller also starts at boot, it starts first. The daemon then
-      # finds it at once and sets no fan. Otherwise the daemon finds it only at its next
-      # check, up to 30 seconds later.
-      after = [
-        "fw-fanctrl.service"
-        "fancontrol.service"
-        "thinkfan.service"
-        "coolercontrold.service"
-      ];
+      # No `after` on other fan controllers. The NixOS fw-fanctrl unit starts after
+      # multi-user.target, so that order is a cycle, and systemd then drops this start job.
+      # The daemon finds another fan controller at its next check, within 30 seconds.
       serviceConfig = {
         ExecStart = utils.escapeSystemdExecArgs [
           (lib.getExe cfg.package)
